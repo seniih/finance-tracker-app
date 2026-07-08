@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../models/safe_models.dart';
-import '../../models/contact_models.dart';
+import '../../models/account.dart';
+import '../../models/contact.dart';
 import 'widgets/dashboard_sidebar.dart';
 import 'widgets/dashboard_content.dart';
 
@@ -13,43 +13,44 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  String _selectedRoute = 'transaction_alis';
-  Safe? _selectedSafe;
+  String _selectedRoute = 'home';
+  Account? _selectedAccount;
   Contact? _selectedContact;
 
   static const List<MenuItem> _menuItems = [
-    MenuItem(label: 'İŞLEMLER', isHeader: true),
-    MenuItem(route: 'transaction_alis', label: 'Alış', icon: Icons.shopping_cart_outlined),
-    MenuItem(route: 'transaction_satis', label: 'Satış', icon: Icons.sell_outlined),
-    MenuItem(route: 'transaction_transfer', label: 'Transfer', icon: Icons.swap_horiz),
-    MenuItem(route: 'transaction_odeme', label: 'Ödeme', icon: Icons.payment),
-    MenuItem(route: 'transaction_tahsilat', label: 'Tahsilat', icon: Icons.account_balance_wallet_outlined),
-    MenuItem(label: 'RAPORLAR', isHeader: true),
-    MenuItem(route: 'transactions_history', label: 'İşlem Geçmişi', icon: Icons.history),
-    MenuItem(route: 'incomes', label: 'Gelirler', icon: Icons.trending_up),
-    MenuItem(route: 'expenses', label: 'Giderler', icon: Icons.trending_down),
-    MenuItem(route: 'profit_center_charts', label: 'Kar Merkezi Grafikleri', icon: Icons.pie_chart_outline_rounded),
-    MenuItem(label: 'YÖNETİM', isHeader: true),
-    MenuItem(route: 'profit_centers', label: 'Kar Merkezleri', icon: Icons.business_center),
-    MenuItem(route: 'safes', label: 'Kasalar', icon: Icons.account_balance_wallet),
-    MenuItem(label: 'CARİ', isHeader: true),
+    MenuItem(route: 'home', label: 'Ana Sayfa', icon: Icons.space_dashboard_outlined),
+
+    MenuItem(label: 'Finansal İşlemler', isHeader: true),
+    MenuItem(route: 'transactions_history', label: 'Tüm İşlemler', icon: Icons.list_alt),
+    MenuItem(route: 'transaction_new_expense', label: 'Gider Ekle', icon: Icons.trending_down),
+    MenuItem(route: 'transaction_new_income', label: 'Gelir Ekle', icon: Icons.trending_up),
+    MenuItem(route: 'transaction_new_payment', label: 'Ödeme', icon: Icons.call_made),
+    MenuItem(route: 'transaction_new_collection', label: 'Tahsilat', icon: Icons.call_received),
+    MenuItem(route: 'transaction_new_transfer', label: 'Yeni Transfer', icon: Icons.swap_horiz),
+    // Not: Yatırım girişi/çıkışı artık Projeler ekranından (ilgili arsa üzerinden) yapılıyor.
+
+    MenuItem(label: 'Yönetim', isHeader: true),
+    MenuItem(route: 'accounts', label: 'Kasalar', icon: Icons.account_balance_wallet),
     MenuItem(route: 'contacts', label: 'Cariler', icon: Icons.people),
-    MenuItem(label: 'SİSTEM', isHeader: true),
+    MenuItem(route: 'projects', label: 'Projeler', icon: Icons.business),
+    MenuItem(route: 'categories', label: 'Kategoriler', icon: Icons.category),
+    
+    MenuItem(label: 'Sistem', isHeader: true),
     MenuItem(route: 'settings', label: 'Ayarlar', icon: Icons.settings),
   ];
 
   void _onRouteSelected(String route) {
     setState(() {
       _selectedRoute = route;
-      _selectedSafe = null;
+      _selectedAccount = null;
       _selectedContact = null;
     });
   }
 
-  void _onSafeSelected(Safe? safe) {
+  void _onAccountSelected(Account? account) {
     setState(() {
-      _selectedRoute = 'safes';
-      _selectedSafe = safe;
+      _selectedRoute = 'accounts';
+      _selectedAccount = account;
     });
   }
 
@@ -70,8 +71,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
             menuItems: _menuItems,
             onRouteSelected: _onRouteSelected,
             onSignOut: () async {
-              await Supabase.instance.client.auth.signOut();
-              // AuthWrapper stream'i session kapandığında LoginPage'e yönlendirir.
+              // Yanlışlıkla tıklamaya karşı onay iste.
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('Çıkış yapılsın mı?'),
+                  content: const Text('Oturumunuz kapatılacak.'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('İptal'),
+                    ),
+                    ElevatedButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Çıkış Yap'),
+                    ),
+                  ],
+                ),
+              );
+              if (confirm == true) {
+                await Supabase.instance.client.auth.signOut();
+              }
             },
           ),
           Expanded(
@@ -79,10 +99,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               body: SafeArea(
                 child: DashboardContent(
                   selectedRoute: _selectedRoute,
-                  selectedSafe: _selectedSafe,
+                  selectedAccount: _selectedAccount,
                   selectedContact: _selectedContact,
-                  onSafeAdded: () => setState(() {}),
-                  onSafeSelected: _onSafeSelected,
+                  onAccountAdded: () => setState(() {}),
+                  onAccountSelected: _onAccountSelected,
                   onContactChanged: () => setState(() {}),
                   onContactSelected: _onContactSelected,
                 ),

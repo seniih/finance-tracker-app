@@ -1,236 +1,290 @@
 import 'package:flutter/material.dart';
-import '../../models/contact_models.dart';
-import '../../services/database_service.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_spacing.dart';
+import '../../widgets/custom_app_bar.dart';
+import 'contact_types_screen.dart';
 
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      appBar: const CustomAppBar(title: 'Ayarlar', icon: Icons.settings),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(AppSpacing.xxxl),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildSectionHeader('Profil & Güvenlik'),
+            const SizedBox(height: AppSpacing.md),
+            _buildProfileCard(context),
+            const SizedBox(height: AppSpacing.xxxl),
 
-class _SettingsScreenState extends State<SettingsScreen> {
-  bool _isLoading = false;
-  List<ContactTypeModel> _contactTypes = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
-
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
-    try {
-      final types = await dbService.getContactTypes();
-      if (!mounted) return;
-      setState(() {
-        _contactTypes = types;
-        _isLoading = false;
-      });
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Hata: $e'), backgroundColor: AppColors.error));
-      }
-    }
-  }
-
-  void _showAddTypeDialog() {
-    String newTypeName = '';
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: AppColors.surface,
-          title: const Text('Yeni Cari Türü Ekle', style: TextStyle(color: AppColors.textPrimary)),
-          content: TextField(
-            autofocus: true,
-            decoration: const InputDecoration(
-              labelText: 'Tür Adı (Örn: Personel, Ortak)',
-              labelStyle: TextStyle(color: AppColors.textSecondary),
-              border: OutlineInputBorder(),
+            _buildSectionHeader('Veri Yönetimi'),
+            const SizedBox(height: AppSpacing.md),
+            _buildSettingsGroup(
+              context: context,
+              items: [
+                _SettingsItem(
+                  icon: Icons.category,
+                  title: 'Cari Türleri',
+                  subtitle: 'Müşteri, Tedarikçi, Ortak gibi türleri düzenleyin',
+                  iconColor: AppColors.info,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ContactTypesScreen()),
+                    );
+                  },
+                ),
+              ],
             ),
-            onChanged: (val) => newTypeName = val,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('İptal', style: TextStyle(color: AppColors.textSecondary)),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                if (newTypeName.trim().isEmpty) return;
-                Navigator.pop(context);
-                setState(() => _isLoading = true);
-                try {
-                  final newType = ContactTypeModel(id: '', name: newTypeName.trim());
-                  await dbService.addContactType(newType);
-                  _loadData();
-                } catch (e) {
-                  setState(() => _isLoading = false);
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Ekleme hatası: $e'), backgroundColor: AppColors.error));
-                  }
-                }
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
-              child: const Text('Ekle', style: TextStyle(color: AppColors.sidebarText)),
+            const SizedBox(height: AppSpacing.xxxl),
+
+            _buildSectionHeader('Tercihler'),
+            const SizedBox(height: AppSpacing.md),
+            _buildSettingsGroup(
+              context: context,
+              items: [
+                _SettingsItem(
+                  icon: Icons.dark_mode,
+                  title: 'Görünüm',
+                  subtitle: 'Tema seçeneklerini ayarlayın (Aydınlık / Karanlık)',
+                  iconColor: Colors.deepPurple,
+                  onTap: () {
+                    _showComingSoonDialog(context, 'Tema Seçenekleri');
+                  },
+                ),
+                _SettingsItem(
+                  icon: Icons.notifications,
+                  title: 'Bildirimler',
+                  subtitle: 'Uygulama içi ve e-posta bildirim ayarları',
+                  iconColor: AppColors.primary,
+                  onTap: () {
+                    _showComingSoonDialog(context, 'Bildirim Ayarları');
+                  },
+                ),
+                _SettingsItem(
+                  icon: Icons.language,
+                  title: 'Dil / Bölge',
+                  subtitle: 'Türkçe (TR) - TRY (₺)',
+                  iconColor: AppColors.info,
+                  onTap: () {
+                    _showComingSoonDialog(context, 'Dil ve Bölge Ayarları');
+                  },
+                ),
+              ],
             ),
           ],
-        );
-      },
+        ),
+      ),
     );
   }
 
-  Future<void> _deleteContactType(String typeName) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Türü Sil', style: TextStyle(color: AppColors.textPrimary)),
-        content: Text('"$typeName" türünü silmek istediğinize emin misiniz?',
-            style: const TextStyle(color: AppColors.textSecondary)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('İptal', style: TextStyle(color: AppColors.textSecondary)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Sil', style: TextStyle(color: Colors.white)),
+  Widget _buildSectionHeader(String title) {
+    return Text(
+      title.toUpperCase(),
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.bold,
+        color: AppColors.textSecondary,
+        letterSpacing: 1.2,
+      ),
+    );
+  }
+
+  Widget _buildProfileCard(BuildContext context) {
+    final user = Supabase.instance.client.auth.currentUser;
+    final email = user?.email ?? 'Bilinmiyor';
+
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.xl),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
-    );
-
-    if (confirm == true) {
-      setState(() => _isLoading = true);
-      try {
-        await dbService.deleteContactType(typeName);
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Tür başarıyla silindi.'), backgroundColor: AppColors.success));
-        _loadData();
-      } catch (e) {
-        if (!mounted) return;
-        setState(() => _isLoading = false);
-        // Hata mesajını (Exception'dan gelen mesajı) direkt gösteriyoruz
-        String errorMsg = e.toString();
-        if (errorMsg.startsWith('Exception: ')) {
-          errorMsg = errorMsg.substring('Exception: '.length);
-        }
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Silme İşlemi Başarısız', style: TextStyle(color: AppColors.error)),
-            content: Text(errorMsg),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Tamam'),
-              )
-            ],
-          ),
-        );
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(AppSpacing.xxxl),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(AppSpacing.md),
-                ),
-                child: const Icon(Icons.settings_outlined, color: AppColors.primary, size: 22),
-              ),
-              const SizedBox(width: AppSpacing.lg),
-              Text('Sistem Ayarları', style: Theme.of(context).textTheme.headlineLarge),
-            ],
+          CircleAvatar(
+            radius: 30,
+            backgroundColor: AppColors.primary.withValues(alpha: 0.1),
+            child: const Icon(Icons.person, size: 30, color: AppColors.primary),
           ),
-          const SizedBox(height: AppSpacing.xxxl),
-          Container(
-            padding: const EdgeInsets.all(AppSpacing.xl),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppSpacing.md),
-              border: Border.all(color: AppColors.border),
-            ),
+          const SizedBox(width: AppSpacing.lg),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.people_alt_outlined, color: AppColors.primary),
-                        const SizedBox(width: AppSpacing.sm),
-                        Text('Cari Türü Yönetimi',
-                            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                    ElevatedButton.icon(
-                      onPressed: _showAddTypeDialog,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                        foregroundColor: AppColors.primary,
-                        elevation: 0,
-                      ),
-                      icon: const Icon(Icons.add, size: 18),
-                      label: const Text('Yeni Tür Ekle'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: AppSpacing.md),
-                const Divider(color: AppColors.border),
-                const SizedBox(height: AppSpacing.md),
-                if (_isLoading)
-                  const Center(child: Padding(padding: EdgeInsets.all(AppSpacing.xl), child: CircularProgressIndicator()))
-                else if (_contactTypes.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(AppSpacing.xl),
-                    child: Text('Henüz cari türü eklenmemiş.', style: TextStyle(color: AppColors.textSecondary)),
-                  )
-                else
-                  ListView.separated(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: _contactTypes.length,
-                    separatorBuilder: (context, index) => const Divider(color: AppColors.border, height: 1),
-                    itemBuilder: (context, index) {
-                      final type = _contactTypes[index];
-                      return ListTile(
-                        contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: AppSpacing.xs),
-                        title: Text(type.name, style: const TextStyle(fontWeight: FontWeight.w500)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline, color: AppColors.error),
-                          onPressed: () => _deleteContactType(type.name),
-                          tooltip: 'Bu türü sil',
-                        ),
-                      );
-                    },
+                const Text(
+                  'Kullanıcı Hesabı',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.textPrimary,
                   ),
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  email,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
               ],
             ),
+          ),
+          OutlinedButton.icon(
+            onPressed: () {
+              // Sign out logic is handled in the sidebar, but we can also have it here.
+              Supabase.instance.client.auth.signOut();
+            },
+            icon: const Icon(Icons.logout, size: 18, color: AppColors.error),
+            label: const Text('Çıkış Yap', style: TextStyle(color: AppColors.error)),
+            style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: AppColors.error),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsGroup({
+    required BuildContext context,
+    required List<_SettingsItem> items,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.02),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: items.asMap().entries.map((entry) {
+          final int idx = entry.key;
+          final _SettingsItem item = entry.value;
+
+          return Column(
+            children: [
+              InkWell(
+                onTap: item.onTap,
+                borderRadius: BorderRadius.circular(
+                  items.length == 1
+                      ? 16
+                      : idx == 0
+                          ? 16 // top radius only
+                          : idx == items.length - 1
+                              ? 16 // bottom radius only
+                              : 0,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.xl,
+                    vertical: AppSpacing.lg,
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: item.iconColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Icon(item.icon, color: item.iconColor, size: 22),
+                      ),
+                      const SizedBox(width: AppSpacing.lg),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item.title,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.textPrimary,
+                              ),
+                            ),
+                            if (item.subtitle != null) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                item.subtitle!,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ]
+                          ],
+                        ),
+                      ),
+                      const Icon(
+                        Icons.chevron_right,
+                        color: AppColors.textSecondary,
+                        size: 20,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (idx < items.length - 1)
+                const Divider(height: 1, thickness: 1, color: AppColors.border, indent: 64),
+            ],
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  void _showComingSoonDialog(BuildContext context, String featureName) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(featureName),
+        content: const Text('Bu özellik yakında eklenecektir. Şimdilik yapım aşamasındadır.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Tamam'),
           ),
         ],
       ),
     );
   }
+}
+
+class _SettingsItem {
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+  final Color iconColor;
+  final VoidCallback onTap;
+
+  _SettingsItem({
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    required this.iconColor,
+    required this.onTap,
+  });
 }

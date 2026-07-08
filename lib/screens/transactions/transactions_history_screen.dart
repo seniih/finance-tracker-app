@@ -1,50 +1,104 @@
 import 'package:flutter/material.dart';
-import '../../models/transaction_models.dart';
-import '../../services/database_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/app_spacing.dart';
 import '../../utils/currency_formatter.dart';
+import '../../widgets/custom_app_bar.dart';
+import '../../utils/constants.dart';
+import '../../models/transaction.dart';
+import '../../services/database_service.dart';
+import '../../services/supabase_database_service.dart';
+import '../../models/ledger_entry.dart';
+import 'forms/transaction_form.dart';
+import 'forms/transfer_form.dart';
+import 'forms/investment_in_form.dart';
+import 'forms/investment_out_form.dart';
 
 class TransactionsHistoryScreen extends StatefulWidget {
-  final String? filterSafeId;
-  final String? filterContactId;
-  final bool showHeader;
-
-  const TransactionsHistoryScreen({
-    super.key,
-    this.filterSafeId,
-    this.filterContactId,
-    this.showHeader = true,
-  });
+  const TransactionsHistoryScreen({super.key});
 
   @override
   State<TransactionsHistoryScreen> createState() => _TransactionsHistoryScreenState();
 }
 
 class _TransactionsHistoryScreenState extends State<TransactionsHistoryScreen> {
-  late Future<List<TransactionModel>> _transactionsFuture;
+  final DatabaseService dbService = SupabaseDatabaseService();
+  bool _isLoading = false;
+  bool _isFirstLoad = true;
+  List<TransactionModel> _transactions = [];
 
   @override
   void initState() {
     super.initState();
-    _transactionsFuture = dbService.getTransactions(
-      safeId: widget.filterSafeId,
-      contactId: widget.filterContactId,
-    );
+    _loadData();
   }
 
-  Future<void> _deleteTx(TransactionModel tx) async {
+  Future<void> _loadData() async {
+    setState(() => _isLoading = true);
+    try {
+      final data = await dbService.getTransactions();
+      if (!mounted) return;
+      setState(() {
+        _transactions = data;
+        _isLoading = false;
+        _isFirstLoad = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _isFirstLoad = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Hata: $e'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+  }
+
+  /// Bir işlemi tipine uygun formda düzenlemeye açar. Hesap bilgisi
+  /// ledger_entries'te tutulduğundan (transactions.account_id her zaman
+  /// dolu değil) önce ledger'lar çekilir -- account_detail'daki akışla aynı.
+  Future<void> _editTransaction(TransactionModel tr) async {
+    List<LedgerEntry> ledgers;
+    try {
+      ledgers = await dbService.getLedgerEntriesForTransaction(tr.id);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Hata: $e'), backgroundColor: AppColors.error),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+
+    final form = switch (tr.transactionType) {
+      TransactionType.standard => TransactionForm(existingTransaction: tr, existingLedgers: ledgers),
+      TransactionType.transfer => TransferForm(existingTransaction: tr, existingLedgers: ledgers),
+      TransactionType.investmentIn => InvestmentInForm(existingTransaction: tr, existingLedgers: ledgers),
+      TransactionType.investmentOut => InvestmentOutForm(existingTransaction: tr, existingLedgers: ledgers),
+    };
+
+    final changed = await Navigator.push(context, MaterialPageRoute(builder: (_) => form));
+    if (changed == true) _loadData();
+  }
+
+  Future<void> _deleteTransaction(TransactionModel transaction) async {
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('İşlemi Sil', style: TextStyle(color: AppColors.textPrimary)),
-        content: const Text('Bu işlemi silmek istediğinize emin misiniz?\nİlgili kasa bakiyeleri geri alınacaktır.', style: TextStyle(color: AppColors.textSecondary)),
+      builder: (ctx) => AlertDialog(
+        title: const Text('Emin misiniz?'),
+        content: const Text('Bu işlem kalıcı olarak silinecektir.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('İptal', style: TextStyle(color: AppColors.textSecondary))),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('İptal', style: TextStyle(color: AppColors.textSecondary)),
+          ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () => Navigator.pop(context, true),
+            onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Sil', style: TextStyle(color: Colors.white)),
           ),
         ],
@@ -52,255 +106,290 @@ class _TransactionsHistoryScreenState extends State<TransactionsHistoryScreen> {
     );
 
     if (confirm == true) {
+      setState(() => _isLoading = true);
       try {
-        await dbService.deleteTransaction(tx);
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('İşlem silindi ve bakiye geri alındı.'), backgroundColor: AppColors.success));
-        setState(() {
-          _transactionsFuture = dbService.getTransactions(
-            safeId: widget.filterSafeId,
-            contactId: widget.filterContactId,
+        await dbService.deleteTransaction(transaction.id);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('İşlem silindi.')),
           );
-        });
+        }
+        _loadData();
       } catch (e) {
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Hata: $e'), backgroundColor: AppColors.error));
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Hata: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
       }
+    }
+  }
+
+  Color _getTransactionColor(TransactionModel tr) {
+    switch (tr.transactionType) {
+      case TransactionType.standard:
+        return tr.category?.type == CategoryType.income ? AppColors.success : AppColors.error;
+      case TransactionType.transfer:
+        return AppColors.info;
+      case TransactionType.investmentIn:
+        return AppColors.investmentIn;
+      case TransactionType.investmentOut:
+        return AppColors.investmentOut;
+    }
+  }
+
+  IconData _getTransactionIcon(TransactionModel tr) {
+    switch (tr.transactionType) {
+      case TransactionType.standard:
+        return tr.category?.type == CategoryType.income ? Icons.trending_up : Icons.trending_down;
+      case TransactionType.transfer:
+        return Icons.swap_horiz;
+      case TransactionType.investmentIn:
+        return Icons.download;
+      case TransactionType.investmentOut:
+        return Icons.upload;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(AppSpacing.xxl + 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header
-          if (widget.showHeader) ...[
-            Row(
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      appBar: const CustomAppBar(title: 'Tüm İşlemler', icon: Icons.list_alt),
+      body: _isFirstLoad
+          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          : Stack(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(AppSpacing.md),
+                _transactions.isEmpty
+                    ? _buildEmptyState()
+                    : _buildTransactionList(),
+                if (_isLoading)
+                  const Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: LinearProgressIndicator(
+                      color: AppColors.primary,
+                      backgroundColor: Colors.transparent,
+                      minHeight: 3,
+                    ),
                   ),
-                  child: const Icon(Icons.history, color: AppColors.primary, size: 22),
-                ),
-                const SizedBox(width: AppSpacing.lg),
-                Text('İşlem Geçmişi', style: Theme.of(context).textTheme.headlineLarge),
               ],
             ),
-            const SizedBox(height: AppSpacing.xxl),
-          ],
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: AppColors.primary,
+        onPressed: _showAddTransactionOptions,
+        child: const Icon(Icons.add, color: Colors.white),
+      ),
+    );
+  }
 
-          // Liste
-          Expanded(
-            child: FutureBuilder<List<TransactionModel>>(
-              future: _transactionsFuture,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-
-                if (snapshot.hasError) {
-                  return Center(
-                    child: Text(
-                      'İşlemler yüklenirken bir hata oluştu:\n${snapshot.error}',
-                      style: const TextStyle(color: AppColors.error),
-                      textAlign: TextAlign.center,
-                    ),
-                  );
-                }
-
-                final transactions = snapshot.data ?? [];
-
-                if (transactions.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.history_toggle_off, size: 64, color: AppColors.border),
-                        const SizedBox(height: AppSpacing.lg),
-                        const Text(
-                          'Henüz hiçbir işlem bulunmuyor.',
-                          style: TextStyle(color: AppColors.textSecondary, fontSize: 16),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-
-                return ListView.separated(
-                  itemCount: transactions.length,
-                  separatorBuilder: (context, index) => const SizedBox(height: AppSpacing.md),
-                  itemBuilder: (context, index) {
-                    final tx = transactions[index];
-                    return _TransactionCard(transaction: tx, onDelete: () => _deleteTx(tx));
-                  },
-                );
-              },
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.receipt_long, size: 80, color: AppColors.textSecondary.withValues(alpha: 0.3)),
+          const SizedBox(height: AppSpacing.lg),
+          const Text(
+            'Henüz İşlem Yok',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          const Text(
+            'Kayıtlı herhangi bir finansal işlem bulunamadı.\nYeni işlem eklemek için + butonuna tıklayın.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              color: AppColors.textSecondary,
             ),
           ),
         ],
       ),
     );
   }
-}
 
-class _TransactionCard extends StatefulWidget {
-  final TransactionModel transaction;
-  final VoidCallback onDelete;
+  Widget _buildTransactionList() {
+    return ListView.separated(
+      padding: const EdgeInsets.all(AppSpacing.lg),
+      itemCount: _transactions.length,
+      separatorBuilder: (context, index) => const SizedBox(height: AppSpacing.sm),
+      itemBuilder: (context, index) {
+        final tr = _transactions[index];
+        final typeColor = _getTransactionColor(tr);
+        final isPositive = tr.transactionType == TransactionType.investmentIn || 
+            (tr.transactionType == TransactionType.standard && tr.category?.type == CategoryType.income);
+        final amountPrefix = tr.transactionType == TransactionType.transfer ? '' : (isPositive ? '+' : '-');
+        final displayLabel = tr.transactionType == TransactionType.standard && tr.category != null 
+            ? tr.category!.name 
+            : tr.transactionType.label;
 
-  const _TransactionCard({required this.transaction, required this.onDelete});
-
-  @override
-  State<_TransactionCard> createState() => _TransactionCardState();
-}
-
-class _TransactionCardState extends State<_TransactionCard> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final typeInfo = _getTypeInfo(widget.transaction.type);
-
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        decoration: BoxDecoration(
-          color: _hovered ? AppColors.surface : AppColors.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: _hovered ? AppColors.border.withValues(alpha: 0.8) : AppColors.border,
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: AppColors.border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.01),
+                blurRadius: 5,
+                offset: const Offset(0, 2),
+              ),
+            ],
           ),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: _hovered ? 0.05 : 0.02),
-              blurRadius: _hovered ? 14 : 10,
-              offset: const Offset(0, 4),
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.xs),
+            leading: CircleAvatar(
+              backgroundColor: typeColor.withValues(alpha: 0.1),
+              child: Icon(_getTransactionIcon(tr), color: typeColor),
             ),
-          ],
-        ),
+            title: Text(
+              displayLabel,
+              style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.textPrimary),
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 4),
+                Text(
+                  tr.transactionDate.toLocal().toString().split(' ')[0],
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                ),
+                if (tr.description != null && tr.description!.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    tr.description!,
+                    style: const TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ],
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '$amountPrefix${CurrencyFormatter.formatAmount(tr.amount)} ${tr.currency}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                    color: tr.transactionType == TransactionType.transfer
+                        ? AppColors.textPrimary
+                        : typeColor,
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.more_vert, color: AppColors.textSecondary, size: 20),
+                  tooltip: 'Seçenekler',
+                  padding: EdgeInsets.zero,
+                  onSelected: (value) {
+                    switch (value) {
+                      case 'edit':
+                        _editTransaction(tr);
+                        break;
+                      case 'delete':
+                        _deleteTransaction(tr);
+                        break;
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem<String>(
+                      value: 'edit',
+                      child: Row(
+                        children: [
+                          Icon(Icons.edit_outlined, color: AppColors.primary, size: 20),
+                          SizedBox(width: AppSpacing.sm),
+                          Text('Düzenle'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'delete',
+                      child: Row(
+                        children: [
+                          Icon(Icons.delete_outline, color: AppColors.error, size: 20),
+                          SizedBox(width: AppSpacing.sm),
+                          Text('Sil', style: TextStyle(color: AppColors.error)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showAddTransactionOptions() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(AppSpacing.xl),
-          child: Row(
+          padding: const EdgeInsets.symmetric(vertical: AppSpacing.lg),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              // İkon Alanı
               Container(
-                padding: const EdgeInsets.all(12),
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: AppSpacing.lg),
                 decoration: BoxDecoration(
-                  color: typeInfo.color.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(typeInfo.icon, color: typeInfo.color, size: 24),
-              ),
-              const SizedBox(width: AppSpacing.lg),
-
-              // Detaylar (Orta Kısım)
-              Expanded(
-                flex: 3,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      typeInfo.title,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        if (widget.transaction.mainAccountName != null) ...[
-                          const Icon(Icons.account_balance_wallet, size: 14, color: AppColors.textSecondary),
-                          const SizedBox(width: 4),
-                          Text(
-                            widget.transaction.type == 'transfer' && widget.transaction.fromAccountName != null
-                                ? '${widget.transaction.fromAccountName} ➤ ${widget.transaction.mainAccountName}'
-                                : widget.transaction.mainAccountName!,
-                            style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                          ),
-                          const SizedBox(width: 12),
-                        ],
-                        if (widget.transaction.contactName != null && widget.transaction.contactName!.isNotEmpty) ...[
-                          const Icon(Icons.person, size: 14, color: AppColors.textSecondary),
-                          const SizedBox(width: 4),
-                          Text(
-                            widget.transaction.contactName!,
-                            style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                          ),
-                        ],
-                      ],
-                    ),
-                    if (widget.transaction.description != null && widget.transaction.description!.isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        widget.transaction.description!,
-                        style: const TextStyle(
-                          fontStyle: FontStyle.italic,
-                          color: AppColors.textSecondary,
-                          fontSize: 12,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ]
-                  ],
+                  color: AppColors.divider,
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-
-              // Tutar ve Tarih (Sağ Kısım)
-              Expanded(
-                flex: 2,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      '${typeInfo.sign}${CurrencyFormatter.format(widget.transaction.amount, currency: widget.transaction.currency)}',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                        color: typeInfo.amountColor,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _formatDate(widget.transaction.date),
-                      style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Hover ile görünen silme butonu
-              AnimatedOpacity(
-                opacity: _hovered ? 1.0 : 0.0,
-                duration: const Duration(milliseconds: 150),
-                child: Padding(
-                  padding: const EdgeInsets.only(left: AppSpacing.md),
-                  child: Tooltip(
-                    message: 'İşlemi Sil',
-                    child: InkWell(
-                      onTap: widget.onDelete,
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: AppColors.error.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Icon(Icons.delete_outline, color: AppColors.error, size: 18),
-                      ),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: AppSpacing.xl, vertical: AppSpacing.sm),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'İşlem Türü Seçin',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.textPrimary,
                     ),
                   ),
                 ),
               ),
+              _buildBottomSheetItem(
+                ctx: ctx,
+                icon: Icons.trending_down,
+                color: AppColors.error,
+                title: 'Gider Ekle',
+                targetForm: const TransactionForm(fixedType: CategoryType.expense),
+              ),
+              _buildBottomSheetItem(
+                ctx: ctx,
+                icon: Icons.trending_up,
+                color: AppColors.success,
+                title: 'Gelir Ekle',
+                targetForm: const TransactionForm(fixedType: CategoryType.income),
+              ),
+              _buildBottomSheetItem(
+                ctx: ctx,
+                icon: Icons.swap_horiz,
+                color: AppColors.info,
+                title: 'Transfer Ekle',
+                targetForm: const TransferForm(),
+              ),
+              // Not: Yatırım girişi/çıkışı artık burada değil, Projeler ekranında
+              // ilgili arsa üzerinden (proje/arsa önceden seçili olarak) yapılıyor.
             ],
           ),
         ),
@@ -308,81 +397,27 @@ class _TransactionCardState extends State<_TransactionCard> {
     );
   }
 
-  String _formatDate(DateTime date) {
-    final day = date.day.toString().padLeft(2, '0');
-    final month = date.month.toString().padLeft(2, '0');
-    final year = date.year.toString();
-    final hour = date.hour.toString().padLeft(2, '0');
-    final minute = date.minute.toString().padLeft(2, '0');
-    return '$day.$month.$year $hour:$minute';
+  Widget _buildBottomSheetItem({
+    required BuildContext ctx,
+    required IconData icon,
+    required Color color,
+    required String title,
+    String? subtitle,
+    required Widget targetForm,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl),
+      leading: CircleAvatar(
+        radius: 20,
+        backgroundColor: color.withValues(alpha: 0.1),
+        child: Icon(icon, color: color, size: 20),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: subtitle != null ? Text(subtitle, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)) : null,
+      onTap: () {
+        Navigator.pop(ctx);
+        Navigator.push(context, MaterialPageRoute(builder: (_) => targetForm)).then((_) => _loadData());
+      },
+    );
   }
-
-  _TransactionTypeInfo _getTypeInfo(String type) {
-    switch (type) {
-      case 'sale':
-        return _TransactionTypeInfo(
-          title: 'Satış',
-          icon: Icons.sell_outlined,
-          color: AppColors.success,
-          amountColor: AppColors.success,
-          sign: '+',
-        );
-      case 'purchase':
-        return _TransactionTypeInfo(
-          title: 'Alış',
-          icon: Icons.shopping_cart_outlined,
-          color: AppColors.error,
-          amountColor: AppColors.error,
-          sign: '-',
-        );
-      case 'collection':
-        return _TransactionTypeInfo(
-          title: 'Tahsilat',
-          icon: Icons.account_balance_wallet_outlined,
-          color: AppColors.success,
-          amountColor: AppColors.success,
-          sign: '+',
-        );
-      case 'payment':
-        return _TransactionTypeInfo(
-          title: 'Ödeme',
-          icon: Icons.payment,
-          color: AppColors.error,
-          amountColor: AppColors.error,
-          sign: '-',
-        );
-      case 'transfer':
-        return _TransactionTypeInfo(
-          title: 'Transfer',
-          icon: Icons.swap_horiz,
-          color: Colors.blue,
-          amountColor: AppColors.textPrimary,
-          sign: '',
-        );
-      default:
-        return _TransactionTypeInfo(
-          title: 'Bilinmeyen İşlem',
-          icon: Icons.help_outline,
-          color: Colors.grey,
-          amountColor: Colors.grey,
-          sign: '',
-        );
-    }
-  }
-}
-
-class _TransactionTypeInfo {
-  final String title;
-  final IconData icon;
-  final Color color;
-  final Color amountColor;
-  final String sign;
-
-  _TransactionTypeInfo({
-    required this.title,
-    required this.icon,
-    required this.color,
-    required this.amountColor,
-    required this.sign,
-  });
 }

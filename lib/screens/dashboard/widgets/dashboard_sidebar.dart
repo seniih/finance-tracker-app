@@ -78,13 +78,21 @@ class DashboardSidebar extends StatelessWidget {
         if (item.isHeader) {
           return Padding(
             padding: const EdgeInsets.fromLTRB(AppSpacing.xl, AppSpacing.lg, AppSpacing.xl, AppSpacing.xs),
-            child: Text(
-              item.label.toUpperCase(),
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: AppColors.sidebarText.withValues(alpha: 0.6),
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1.2,
-              ),
+            child: Row(
+              children: [
+                if (item.icon != null) ...[
+                  Icon(item.icon, color: AppColors.sidebarTextSubtle, size: 16),
+                  const SizedBox(width: 8),
+                ],
+                Text(
+                  item.label.toUpperCase(),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: AppColors.sidebarTextSubtle,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+              ],
             ),
           );
         }

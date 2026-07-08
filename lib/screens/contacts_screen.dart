@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
-import '../models/contact_models.dart';
+import '../widgets/custom_app_bar.dart';
+import '../models/contact.dart';
+import '../models/contact_type.dart';
+import '../models/transaction.dart';
 import '../services/database_service.dart';
+import '../services/supabase_database_service.dart';
 import '../utils/app_colors.dart';
 import '../utils/app_spacing.dart';
+import '../utils/form_helpers.dart';
+import '../utils/contact_balance.dart';
 import '../utils/currency_formatter.dart';
 import '../utils/number_input_formatter.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-import 'transactions/transactions_history_screen.dart';
+import '../utils/constants.dart';
+import 'contacts/contact_detail_screen.dart';
 
 class ContactsScreen extends StatefulWidget {
   final Contact? selectedContact;
@@ -25,49 +31,13 @@ class ContactsScreen extends StatefulWidget {
 }
 
 class _ContactsScreenState extends State<ContactsScreen> {
-  @override
-  Widget build(BuildContext context) {
-    if (widget.selectedContact != null) {
-      return _ContactDetailView(
-        contact: widget.selectedContact!,
-        onBack: () => widget.onContactSelected?.call(null),
-        onContactDeleted: widget.onContactChanged,
-        onContactUpdated: (updated) {
-          widget.onContactSelected?.call(updated);
-          widget.onContactChanged?.call();
-        },
-      );
-    }
-    return _ContactListView(
-      onContactAdded: _handleContactChanged,
-      onContactSelected: (c) => widget.onContactSelected?.call(c),
-    );
-  }
-
-  void _handleContactChanged() {
-    setState(() {});
-    widget.onContactChanged?.call();
-  }
-}
-
-class _ContactListView extends StatefulWidget {
-  final VoidCallback onContactAdded;
-  final void Function(Contact) onContactSelected;
-
-  const _ContactListView({
-    required this.onContactAdded,
-    required this.onContactSelected,
-  });
-
-  @override
-  State<_ContactListView> createState() => _ContactListViewState();
-}
-
-class _ContactListViewState extends State<_ContactListView> {
+  final DatabaseService dbService = SupabaseDatabaseService();
   bool _isLoading = false;
-  List<ContactTypeModel> _contactTypes = [];
+  bool _isFirstLoad = true;
   List<Contact> _allContacts = [];
-  String? _selectedTypeId;
+  List<ContactTypeModel> _contactTypes = [];
+  String? _selectedTypeFilter;
+  Map<String, Map<String, double>> _balancesByContact = {};
 
   @override
   void initState() {
@@ -78,39 +48,50 @@ class _ContactListViewState extends State<_ContactListView> {
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
     try {
-      final types = await dbService.getContactTypes();
-      final contacts = await dbService.getContacts();
+      final futures = await Future.wait([
+        dbService.getContacts(_selectedTypeFilter),
+        dbService.getContactTypes(),
+        // Cari borç/alacak rozetleri için: tüm işlemleri tek seferde çekip
+        // client-side cariye göre grupluyoruz (her cari için ayrı sorgu atmamak için).
+        dbService.getTransactions(),
+      ]);
       if (!mounted) return;
       setState(() {
-        _contactTypes = types;
-        _allContacts = contacts;
-        if (_contactTypes.isNotEmpty && _selectedTypeId == null) {
-          _selectedTypeId = _contactTypes.first.name;
-        }
+        _allContacts = futures[0] as List<Contact>;
+        _contactTypes = futures[1] as List<ContactTypeModel>;
+        _balancesByContact = ContactBalanceCalculator.calculateByContact(
+          futures[2] as List<TransactionModel>,
+          futures[0] as List<Contact>,
+        );
         _isLoading = false;
+        _isFirstLoad = false;
       });
     } catch (e) {
       if (mounted) {
-        setState(() => _isLoading = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Hata: $e'), backgroundColor: AppColors.error));
+        setState(() {
+          _isLoading = false;
+          _isFirstLoad = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Hata: $e')));
       }
     }
   }
 
-  void _showAddContactDialog() {
-    if (_contactTypes.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lütfen önce Ayarlar menüsünden bir Cari Türü ekleyin.'), backgroundColor: AppColors.error));
-      return;
-    }
+  void _showAddEditDialog([Contact? existingContact]) {
+    final isEditing = existingContact != null;
 
-    String newName = '';
-    String selectedType = _selectedTypeId ?? _contactTypes.first.name;
-    String phone = '';
-    String tc = '';
-    String address = '';
-    String description = '';
-    String currency = 'TL';
-    String balanceStr = '';
+    String name = existingContact?.name ?? '';
+    String? selectedTypeId = existingContact?.contactTypeId;
+    String phone = existingContact?.phone ?? '';
+    String email = existingContact?.email ?? '';
+    String taxOffice = existingContact?.taxOffice ?? '';
+    String iban = existingContact?.iban ?? '';
+    String address = existingContact?.address ?? '';
+    String description = existingContact?.description ?? '';
+    final existingOpening = existingContact?.openingBalance ?? 0.0;
+    String openingBalanceStr = existingOpening == 0 ? '' : formatNumberForInput(existingOpening.abs());
+    String openingCurrency = existingContact?.openingBalanceCurrency ?? 'TRY';
+    bool isDebtor = existingOpening >= 0; // true: cari bana borçlu
 
     showDialog(
       context: context,
@@ -118,104 +99,140 @@ class _ContactListViewState extends State<_ContactListView> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              backgroundColor: AppColors.surface,
-              title: const Text('Yeni Cari Ekle', style: TextStyle(color: AppColors.textPrimary)),
+              title: Text(isEditing ? 'Cari Düzenle' : 'Yeni Cari Ekle'),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    DropdownButtonFormField<String>(
-                      decoration: const InputDecoration(
-                        labelText: 'Cari Türü',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
+                    if (_contactTypes.isEmpty)
+                      const Text('Önce Ayarlardan Cari Türü Ekleyin.', style: TextStyle(color: AppColors.error)),
+                    if (_contactTypes.isNotEmpty)
+                      DropdownButtonFormField<String>(
+                        decoration: buildInputDecoration('Cari Türü (Opsiyonel)'),
+                        initialValue: selectedTypeId,
+                        hint: const Text('Seçiniz'),
+                        items: _contactTypes.map((t) => DropdownMenuItem(value: t.id, child: Text(t.name))).toList(),
+                        onChanged: (val) => setDialogState(() => selectedTypeId = val),
                       ),
-                      initialValue: selectedType,
-                      items: _contactTypes.map((t) => DropdownMenuItem(value: t.name, child: Text(t.name))).toList(),
-                      onChanged: (val) => setDialogState(() => selectedType = val!),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      initialValue: name,
+                      decoration: buildInputDecoration('İsim / Kurum Adı'),
+                      onChanged: (val) => name = val,
                     ),
                     const SizedBox(height: 12),
-                    TextField(
-                      autofocus: true,
-                      decoration: const InputDecoration(
-                        labelText: 'İsim / Kurum Adı',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (val) => newName = val,
+                    TextFormField(
+                      initialValue: phone,
+                      decoration: buildInputDecoration('Telefon'),
+                      onChanged: (val) => phone = val,
                     ),
                     const SizedBox(height: 12),
+                    TextFormField(
+                      initialValue: email,
+                      decoration: buildInputDecoration('E-posta'),
+                      onChanged: (val) => email = val,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      initialValue: taxOffice,
+                      decoration: buildInputDecoration('Vergi Dairesi / VKN / TC'),
+                      onChanged: (val) => taxOffice = val,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      initialValue: iban,
+                      decoration: buildInputDecoration('IBAN'),
+                      onChanged: (val) => iban = val,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      initialValue: address,
+                      decoration: buildInputDecoration('Adres'),
+                      onChanged: (val) => address = val,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      initialValue: description,
+                      decoration: buildInputDecoration('Açıklama'),
+                      onChanged: (val) => description = val,
+                      maxLines: 2,
+                    ),
+                    const SizedBox(height: 12),
+                    const Divider(color: AppColors.border),
+                    const SizedBox(height: 4),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Açılış Bakiyesi (Devir) -- Opsiyonel',
+                        style: TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
-                          child: TextField(
-                            decoration: const InputDecoration(
-                              labelText: 'Başlangıç Bakiyesi',
-                              labelStyle: TextStyle(color: AppColors.textSecondary),
-                              border: OutlineInputBorder(),
-                            ),
-                            keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                          child: TextFormField(
+                            initialValue: openingBalanceStr,
+                            decoration: buildInputDecoration('Tutar'),
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
                             inputFormatters: [ThousandSeparatorInputFormatter()],
-                            onChanged: (val) => balanceStr = val,
+                            onChanged: (val) => openingBalanceStr = val,
                           ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: DropdownButtonFormField<String>(
-                            decoration: const InputDecoration(
-                              labelText: 'Para Birimi',
-                              labelStyle: TextStyle(color: AppColors.textSecondary),
-                              border: OutlineInputBorder(),
-                            ),
-                            initialValue: currency,
-                            items: const [
-                              DropdownMenuItem(value: 'TL', child: Text('TL')),
-                              DropdownMenuItem(value: 'USD', child: Text('Dolar')),
-                              DropdownMenuItem(value: 'EUR', child: Text('Euro')),
-                              DropdownMenuItem(value: 'GRAM_ALTIN', child: Text('Gram Altın')),
-                              DropdownMenuItem(value: 'CUMHURIYET_ALTINI', child: Text('Cumhuriyet Altını')),
-                            ],
-                            onChanged: (val) => setDialogState(() => currency = val!),
+                            decoration: buildInputDecoration('Para Birimi'),
+                            initialValue: openingCurrency,
+                            items: appCurrencies.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                            onChanged: (val) => setDialogState(() => openingCurrency = val ?? openingCurrency),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'TC No / Vergi No',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (val) => tc = val,
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Telefon',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (val) => phone = val,
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Adres',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (val) => address = val,
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Açıklama',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                      onChanged: (val) => description = val,
-                      maxLines: 2,
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => setDialogState(() => isDebtor = true),
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: isDebtor ? AppColors.success.withValues(alpha: 0.1) : AppColors.background,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: isDebtor ? AppColors.success : AppColors.border),
+                              ),
+                              child: Text(
+                                'Cari Bana Borçlu',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: isDebtor ? AppColors.success : AppColors.textSecondary),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => setDialogState(() => isDebtor = false),
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: !isDebtor ? AppColors.warning.withValues(alpha: 0.1) : AppColors.background,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: !isDebtor ? AppColors.warning : AppColors.border),
+                              ),
+                              child: Text(
+                                'Ben Cariye Borçluyum',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: !isDebtor ? AppColors.warning : AppColors.textSecondary),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -223,174 +240,217 @@ class _ContactListViewState extends State<_ContactListView> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: const Text('İptal', style: TextStyle(color: AppColors.textSecondary)),
+                  child: const Text('İptal'),
                 ),
                 ElevatedButton(
                   onPressed: () async {
-                    if (newName.trim().isEmpty) return;
+                    if (name.trim().isEmpty) return;
                     Navigator.pop(context);
                     setState(() => _isLoading = true);
-                    final balance = parseFormattedNumber(balanceStr) ?? 0.0;
+
+                    final openingAmount = parseFormattedNumber(openingBalanceStr)?.abs() ?? 0.0;
                     final newContact = Contact(
-                      id: DateTime.now().toString(),
-                      name: newName.trim(),
-                      type: selectedType,
+                      id: isEditing ? existingContact.id : '',
+                      userId: isEditing ? existingContact.userId : '',
+                      name: name.trim(),
+                      contactTypeId: selectedTypeId,
                       phone: phone.trim().isEmpty ? null : phone.trim(),
-                      tc: tc.trim().isEmpty ? null : tc.trim(),
+                      email: email.trim().isEmpty ? null : email.trim(),
+                      taxOffice: taxOffice.trim().isEmpty ? null : taxOffice.trim(),
+                      iban: iban.trim().isEmpty ? null : iban.trim(),
                       address: address.trim().isEmpty ? null : address.trim(),
                       description: description.trim().isEmpty ? null : description.trim(),
-                      balance: balance,
-                      currency: currency,
+                      openingBalance: isDebtor ? openingAmount : -openingAmount,
+                      openingBalanceCurrency: openingCurrency,
                     );
 
                     try {
-                      await dbService.addContact(newContact);
+                      if (isEditing) {
+                        await dbService.updateContact(newContact);
+                      } else {
+                        await dbService.addContact(newContact);
+                      }
                       _loadData();
-                      widget.onContactAdded();
-                    } on PostgrestException catch (pe) {
-                      if (!context.mounted) return;
-                      setState(() => _isLoading = false);
-                      String errorMessage = pe.message;
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMessage), backgroundColor: AppColors.error, duration: const Duration(seconds: 5)));
+                      widget.onContactChanged?.call();
                     } catch (e) {
-                      if (!context.mounted) return;
-                      setState(() => _isLoading = false);
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Hata oluştu: $e'), backgroundColor: AppColors.error));
+                      if (context.mounted) {
+                        setState(() => _isLoading = false);
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Hata: $e')));
+                      }
                     }
                   },
-                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
-                  child: const Text('Ekle', style: TextStyle(color: AppColors.sidebarText)),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+                  child: const Text('Kaydet'),
                 ),
               ],
             );
-          }
+          },
         );
       },
     );
   }
 
+
+  Future<void> _openDetail(Contact contact) async {
+    final changed = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => ContactDetailScreen(contact: contact)),
+    );
+    if (changed == true) {
+      _loadData();
+      widget.onContactChanged?.call();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (_isLoading && _allContacts.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+    if (widget.selectedContact != null) {
+      return ContactDetailScreen(
+        contact: widget.selectedContact!,
+        onBack: () => widget.onContactSelected?.call(null),
+        onChanged: () {
+          widget.onContactChanged?.call();
+          _loadData();
+        },
+      );
     }
 
-    final displayContacts = _selectedTypeId == null
-        ? _allContacts
-        : _allContacts.where((c) => c.type == _selectedTypeId).toList();
-
-    return Padding(
-      padding: const EdgeInsets.all(AppSpacing.xxxl),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      appBar: const CustomAppBar(title: 'Cariler', icon: Icons.people),
+      body: Column(
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(AppSpacing.md),
-                    ),
-                    child: const Icon(Icons.people_outline, color: AppColors.primary, size: 22),
-                  ),
-                  const SizedBox(width: AppSpacing.lg),
-                  Text('Cariler', style: Theme.of(context).textTheme.headlineLarge),
-                ],
-              ),
-              ElevatedButton.icon(
-                onPressed: _showAddContactDialog,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: AppColors.sidebarText,
-                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.xl, vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  elevation: 0,
-                ),
-                icon: const Icon(Icons.add, size: 18),
-                label: const Text('Cari Ekle'),
-              ),
-            ],
-          ),
-          const SizedBox(height: AppSpacing.xxxl),
-          if (_contactTypes.isNotEmpty) ...[
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
+          // Filtre satırı
+          if (_contactTypes.isNotEmpty)
+            Container(
+              color: AppColors.surface,
+              padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
               child: Row(
                 children: [
-                  _TypeTab(
-                    title: 'Tümü',
-                    isSelected: _selectedTypeId == null,
-                    onTap: () => setState(() => _selectedTypeId = null),
-                  ),
+                  const Text('Filtrele:', style: TextStyle(fontSize: 13, color: AppColors.textSecondary, fontWeight: FontWeight.w500)),
                   const SizedBox(width: AppSpacing.sm),
-                  ..._contactTypes.map((type) => Padding(
-                        padding: const EdgeInsets.only(right: AppSpacing.sm),
-                        child: _TypeTab(
-                          title: type.name,
-                          isSelected: _selectedTypeId == type.name,
-                          onTap: () => setState(() => _selectedTypeId = type.name),
-                        ),
-                      )),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _FilterChip(
+                            label: 'Tümü',
+                            isSelected: _selectedTypeFilter == null,
+                            onTap: () {
+                              setState(() => _selectedTypeFilter = null);
+                              _loadData();
+                            },
+                          ),
+                          const SizedBox(width: AppSpacing.xs),
+                          ..._contactTypes.map((t) => Padding(
+                                padding: const EdgeInsets.only(right: AppSpacing.xs),
+                                child: _FilterChip(
+                                  label: t.name,
+                                  isSelected: _selectedTypeFilter == t.id,
+                                  onTap: () {
+                                    setState(() => _selectedTypeFilter = t.id);
+                                    _loadData();
+                                  },
+                                ),
+                              )),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(height: AppSpacing.xl),
-          ],
-          if (displayContacts.isEmpty)
-            Expanded(
-              child: Center(
-                child: Text('Bu türde cari bulunmuyor.', style: TextStyle(color: AppColors.textSecondary)),
-              ),
-            )
-          else
-            Expanded(
-              child: ListView.separated(
-                itemCount: displayContacts.length,
-                separatorBuilder: (context, index) => const SizedBox(height: AppSpacing.md),
-                itemBuilder: (context, index) {
-                  final contact = displayContacts[index];
-                  return InkWell(
-                    onTap: () => widget.onContactSelected(contact),
-                    borderRadius: BorderRadius.circular(14),
-                    child: _ContactCard(contact: contact),
-                  );
-                },
-              ),
-            ),
+          const Divider(height: 1, color: AppColors.border),
+          // Liste
+          Expanded(
+            child: _isFirstLoad
+                ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                : Stack(
+                    children: [
+                      _allContacts.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.people_outline, size: 64, color: AppColors.border),
+                                  const SizedBox(height: AppSpacing.lg),
+                                  const Text('Kayıtlı cari bulunamadı.', style: TextStyle(color: AppColors.textSecondary)),
+                                ],
+                              ),
+                            )
+                          : ListView.separated(
+                              padding: const EdgeInsets.all(AppSpacing.lg),
+                              itemCount: _allContacts.length,
+                              separatorBuilder: (context, index) => const SizedBox(height: AppSpacing.sm),
+                              itemBuilder: (context, index) {
+                                final contact = _allContacts[index];
+                                return _ContactCard(
+                                  contact: contact,
+                                  balances: _balancesByContact[contact.id] ?? const {},
+                                  onTap: () {
+                                    if (widget.onContactSelected != null) {
+                                      widget.onContactSelected!(contact);
+                                    } else {
+                                      _openDetail(contact);
+                                    }
+                                  },
+                                );
+                              },
+                            ),
+                      if (_isLoading)
+                        const Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          child: LinearProgressIndicator(
+                            color: AppColors.primary,
+                            backgroundColor: Colors.transparent,
+                            minHeight: 3,
+                          ),
+                        ),
+                    ],
+                  ),
+          ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        onPressed: () => _showAddEditDialog(),
+        icon: const Icon(Icons.add),
+        label: const Text('Cari Ekle'),
       ),
     );
   }
 }
 
-class _TypeTab extends StatelessWidget {
-  final String title;
+// ── Filtre Chip ───────────────────────────────────────────────────────────────
+class _FilterChip extends StatelessWidget {
+  final String label;
   final bool isSelected;
   final VoidCallback onTap;
 
-  const _TypeTab({required this.title, required this.isSelected, required this.onTap});
+  const _FilterChip({required this.label, required this.isSelected, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
+    return GestureDetector(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: isSelected ? AppColors.primary : AppColors.surface,
+          color: isSelected ? AppColors.primary : AppColors.background,
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: isSelected ? AppColors.primary : AppColors.border),
         ),
         child: Text(
-          title,
+          label,
           style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
             color: isSelected ? Colors.white : AppColors.textSecondary,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
           ),
         ),
       ),
@@ -398,447 +458,117 @@ class _TypeTab extends StatelessWidget {
   }
 }
 
+// ── Cari Kartı ────────────────────────────────────────────────────────────────
 class _ContactCard extends StatelessWidget {
   final Contact contact;
+  final Map<String, double> balances;
+  final VoidCallback onTap;
 
-  const _ContactCard({required this.contact});
+  const _ContactCard({required this.contact, required this.balances, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(AppSpacing.xl),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(AppSpacing.md),
-            ),
-            child: const Icon(Icons.person, color: AppColors.primary, size: 24),
+    final initials = contact.name.isNotEmpty ? contact.name[0].toUpperCase() : '?';
+    final balanceEntries = balances.entries.toList()
+      ..sort((a, b) => b.value.abs().compareTo(a.value.abs()));
+
+    return Material(
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.border),
           ),
-          const SizedBox(width: AppSpacing.lg),
-          Expanded(
-            flex: 2,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  contact.name,
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600),
-                ),
-                Text(
-                  contact.type,
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-          if (contact.phone != null)
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Telefon', style: TextStyle(color: AppColors.textSecondary, fontSize: 11)),
-                  Text(contact.phone!, style: Theme.of(context).textTheme.bodyMedium),
-                ],
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 24,
+                backgroundColor: AppColors.primary.withValues(alpha: 0.12),
+                child: Text(initials, style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 18)),
               ),
-            )
-          else
-            const Expanded(child: SizedBox()),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  contact.balance > 0
-                      ? 'Alacak: ${CurrencyFormatter.format(contact.balance.abs(), currency: contact.currency)}'
-                      : contact.balance < 0
-                          ? 'Borç: ${CurrencyFormatter.format(contact.balance.abs(), currency: contact.currency)}'
-                          : CurrencyFormatter.format(0, currency: contact.currency),
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 17,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ContactDetailView extends StatelessWidget {
-  final Contact contact;
-  final VoidCallback onBack;
-  final VoidCallback? onContactDeleted;
-  final void Function(Contact)? onContactUpdated;
-
-  const _ContactDetailView({
-    required this.contact,
-    required this.onBack,
-    this.onContactDeleted,
-    this.onContactUpdated,
-  });
-
-  Future<void> _deleteContact(BuildContext context) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Cariyi Sil', style: TextStyle(color: AppColors.textPrimary)),
-        content: Text('"${contact.name}" carisini silmek istediğinize emin misiniz?', style: const TextStyle(color: AppColors.textSecondary)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('İptal', style: TextStyle(color: AppColors.textSecondary))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Sil', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm == true) {
-      try {
-        await dbService.deleteContact(contact);
-        if (!context.mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cari başarıyla silindi.'), backgroundColor: AppColors.success));
-        onContactDeleted?.call();
-        onBack();
-      } catch (e) {
-        if (!context.mounted) return;
-        // Exception mesajını düzgün göster
-        String errorMsg = e.toString();
-        if (errorMsg.startsWith('Exception: ')) {
-          errorMsg = errorMsg.substring('Exception: '.length);
-        }
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Silme İşlemi Başarısız', style: TextStyle(color: AppColors.error)),
-            content: Text(errorMsg),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Tamam'),
-              )
-            ],
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _showEditContactDialog(BuildContext context) async {
-    final types = await dbService.getContactTypes();
-    if (types.isEmpty) return;
-
-    String newName = contact.name;
-    String selectedType = contact.type;
-    String phone = contact.phone ?? '';
-    String tc = contact.tc ?? '';
-    String address = contact.address ?? '';
-    String description = contact.description ?? '';
-    String currency = contact.currency.toUpperCase();
-    final validCurrencies = ['TL', 'USD', 'EUR', 'GRAM_ALTIN', 'CUMHURIYET_ALTINI'];
-    if (!validCurrencies.contains(currency)) currency = 'TL';
-    
-    final balanceCtrl = TextEditingController(
-      text: contact.balance != 0 
-          ? contact.balance.toStringAsFixed(2).replaceAll('.00', '').replaceAll('.', ',')
-          : '',
-    );
-    final nameCtrl = TextEditingController(text: newName);
-    final tcCtrl = TextEditingController(text: tc);
-    final phoneCtrl = TextEditingController(text: phone);
-    final addressCtrl = TextEditingController(text: address);
-    final descCtrl = TextEditingController(text: description);
-
-    if (!context.mounted) return;
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              backgroundColor: AppColors.surface,
-              title: const Text('Cariyi Düzenle', style: TextStyle(color: AppColors.textPrimary)),
-              content: SingleChildScrollView(
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
                 child: Column(
-                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    DropdownButtonFormField<String>(
-                      decoration: const InputDecoration(
-                        labelText: 'Cari Türü',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                      initialValue: selectedType,
-                      items: types.map((t) => DropdownMenuItem(value: t.name, child: Text(t.name))).toList(),
-                      onChanged: (val) => setDialogState(() => selectedType = val!),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: nameCtrl,
-                      autofocus: true,
-                      decoration: const InputDecoration(
-                        labelText: 'İsim / Kurum Adı',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
+                    Text(contact.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: AppColors.textPrimary)),
+                    const SizedBox(height: 4),
                     Row(
                       children: [
-                        Expanded(
-                          child: TextField(
-                            controller: balanceCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Başlangıç Bakiyesi',
-                              labelStyle: TextStyle(color: AppColors.textSecondary),
-                              border: OutlineInputBorder(),
-                            ),
-                            keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
-                            inputFormatters: [ThousandSeparatorInputFormatter()],
+                        if (contact.contactType != null)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(color: AppColors.info.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
+                            child: Text(contact.contactType!.name, style: const TextStyle(fontSize: 11, color: AppColors.info, fontWeight: FontWeight.w600)),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: DropdownButtonFormField<String>(
-                            decoration: const InputDecoration(
-                              labelText: 'Para Birimi',
-                              labelStyle: TextStyle(color: AppColors.textSecondary),
-                              border: OutlineInputBorder(),
-                            ),
-                            initialValue: currency,
-                            items: const [
-                              DropdownMenuItem(value: 'TL', child: Text('TL')),
-                              DropdownMenuItem(value: 'USD', child: Text('Dolar')),
-                              DropdownMenuItem(value: 'EUR', child: Text('Euro')),
-                              DropdownMenuItem(value: 'GRAM_ALTIN', child: Text('Gram Altın')),
-                              DropdownMenuItem(value: 'CUMHURIYET_ALTINI', child: Text('Cumhuriyet Altını')),
-                            ],
-                            onChanged: (val) => setDialogState(() => currency = val!),
-                          ),
-                        ),
+                        if (contact.phone != null) ...[
+                          const SizedBox(width: 6),
+                          const Icon(Icons.phone_outlined, size: 12, color: AppColors.textSecondary),
+                          const SizedBox(width: 3),
+                          Text(contact.phone!, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                        ],
                       ],
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: tcCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'TC No / Vergi No',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: phoneCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Telefon',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: addressCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Adres',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: descCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Açıklama',
-                        labelStyle: TextStyle(color: AppColors.textSecondary),
-                        border: OutlineInputBorder(),
-                      ),
-                      maxLines: 2,
                     ),
                   ],
                 ),
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('İptal', style: TextStyle(color: AppColors.textSecondary)),
+              const SizedBox(width: AppSpacing.sm),
+              // Bakiye rozeti: kasa kartındaki (_AccountCard) "tutar + alt başlık"
+              // düzeniyle birebir aynı stil -- burada birden fazla para birimi
+              // olabileceğinden ilk (en büyük) tutar öne çıkarılır, diğerleri
+              // altına daha küçük punto ile eklenir.
+              if (balanceEntries.isNotEmpty)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    for (int i = 0; i < balanceEntries.length; i++) ...[
+                      if (i > 0) const SizedBox(height: 6),
+                      _ContactBalanceCell(entry: balanceEntries[i], prominent: i == 0),
+                    ],
+                  ],
                 ),
-                ElevatedButton(
-                  onPressed: () async {
-                    if (nameCtrl.text.trim().isEmpty) return;
-                    final balance = parseFormattedNumber(balanceCtrl.text) ?? 0.0;
-                    final newContact = Contact(
-                      id: contact.id,
-                      name: nameCtrl.text.trim(),
-                      type: selectedType,
-                      phone: phoneCtrl.text.trim().isEmpty ? null : phoneCtrl.text.trim(),
-                      tc: tcCtrl.text.trim().isEmpty ? null : tcCtrl.text.trim(),
-                      address: addressCtrl.text.trim().isEmpty ? null : addressCtrl.text.trim(),
-                      description: descCtrl.text.trim().isEmpty ? null : descCtrl.text.trim(),
-                      balance: balance,
-                      currency: currency,
-                    );
-                    Navigator.pop(context);
-                    await dbService.updateContact(newContact);
-                    onContactUpdated?.call(newContact);
-                  },
-                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary),
-                  child: const Text('Kaydet', style: TextStyle(color: AppColors.sidebarText)),
-                ),
-              ],
-            );
-          }
-        );
-      }
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(AppSpacing.xxxl),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.arrow_back),
-                    onPressed: onBack,
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  Text(contact.name, style: Theme.of(context).textTheme.headlineLarge),
-                  const SizedBox(width: AppSpacing.md),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(contact.type, style: const TextStyle(color: AppColors.primary, fontSize: 12)),
-                  ),
-                ],
-              ),
-              Row(
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: () => _showEditContactDialog(context),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.warning.withValues(alpha: 0.1),
-                      foregroundColor: AppColors.warning,
-                      elevation: 0,
-                    ),
-                    icon: const Icon(Icons.edit_outlined, size: 20),
-                    label: const Text('Düzenle'),
-                  ),
-                  const SizedBox(width: AppSpacing.sm),
-                  ElevatedButton.icon(
-                    onPressed: () => _deleteContact(context),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.error.withValues(alpha: 0.1),
-                      foregroundColor: AppColors.error,
-                      elevation: 0,
-                    ),
-                    icon: const Icon(Icons.delete_outline, size: 20),
-                    label: const Text('Sil'),
-                  ),
-                ],
-              ),
+              const SizedBox(width: AppSpacing.sm),
+              const Icon(Icons.chevron_right, color: AppColors.textSecondary, size: 20),
             ],
           ),
-          const SizedBox(height: AppSpacing.xl),
-          Container(
-            padding: const EdgeInsets.all(AppSpacing.xl),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppSpacing.md),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Row(
-              children: [
-                _buildInfoCol(
-                  contact.balance > 0 ? 'Alacak' : contact.balance < 0 ? 'Borç' : 'Bakiye',
-                  CurrencyFormatter.format(contact.balance.abs(), currency: contact.currency),
-                  color: AppColors.textPrimary,
-                  isBold: true,
-                ),
-                _buildInfoCol('Telefon', contact.phone ?? '-'),
-                _buildInfoCol('TC / Vergi No', contact.tc ?? '-'),
-                _buildInfoCol('Adres', contact.address ?? '-'),
-              ],
-            ),
-          ),
-          if (contact.description != null && contact.description!.isNotEmpty) ...[
-            const SizedBox(height: AppSpacing.md),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(AppSpacing.lg),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(AppSpacing.md),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Açıklama', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-                  const SizedBox(height: 4),
-                  Text(contact.description!, style: const TextStyle(fontSize: 14)),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: AppSpacing.xxxl),
-          Text('İşlem Geçmişi', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: AppSpacing.md),
-          Expanded(
-            child: TransactionsHistoryScreen(
-              filterContactId: contact.id,
-              showHeader: false,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildInfoCol(String label, String value, {Color? color, bool isBold = false}) {
-    return Expanded(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
-          const SizedBox(height: 4),
-          Text(
-            value, 
-            style: TextStyle(
-              color: color ?? AppColors.textPrimary,
-              fontWeight: isBold ? FontWeight.bold : FontWeight.w500,
-              fontSize: 15,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 }
+
+// ── Cari Bakiye Hücresi (_AccountCard'daki "tutar + alt başlık" stiliyle aynı) ──
+class _ContactBalanceCell extends StatelessWidget {
+  final MapEntry<String, double> entry;
+  final bool prominent;
+
+  const _ContactBalanceCell({required this.entry, required this.prominent});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDebtor = entry.value > 0; // cari bana borçlu
+    final tintColor = isDebtor ? AppColors.success : AppColors.warning;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Text(
+          CurrencyFormatter.format(entry.value.abs(), currency: entry.key),
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: prominent ? 15 : 13, color: tintColor),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          isDebtor ? 'Borçlu' : 'Alacaklı',
+          style: TextStyle(fontSize: 11, color: tintColor),
+        ),
+      ],
+    );
+  }
+}
+
+// Cari detay ekranı artık ContactDetailScreen (contacts/contact_detail_screen.dart)
+// üzerinden tam sayfa olarak açılıyor -- eski bottom sheet kaldırıldı.

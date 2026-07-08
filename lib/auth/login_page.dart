@@ -37,6 +37,13 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
     
+    if (!_isLogin && password.length < 6) {
+      // Supabase varsayılanıyla aynı kural; İngilizce sunucu hatası yerine
+      // baştan Türkçe uyarı gösteriyoruz.
+      _showError('Şifre en az 6 karakter olmalı.');
+      return;
+    }
+
     if (!_isLogin && password != _confirmPasswordCtrl.text) {
       _showError('Şifreler eşleşmiyor, lütfen kontrol edin.');
       return;

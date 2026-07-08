@@ -16,11 +16,13 @@ class AppColors {
   static const Color textPrimary = Color(0xFF111827);
   static const Color textSecondary = Color(0xFF6B7280);
 
-  // Semantic colors
+  // Semantik renkler
   static const Color success = Color(0xFF16A34A);
   static const Color error = Color(0xFFDC2626);
   static const Color warning = Color(0xFFF59E0B);
   static const Color info = Color(0xFF0EA5E9);
+  static const Color investmentIn = Color(0xFF0D9488);  // teal
+  static const Color investmentOut = Color(0xFF9333EA); // purple
 
   // Borders / UI
   static const Color border = Color(0xFFE5E7EB);

@@ -21,6 +21,17 @@ abstract final class CurrencyFormatter {
     }
   }
 
+  /// Tutarı her zaman iki ondalık haneyle, binlik nokta ve virgüllü ondalık
+  /// olarak biçimlendirir (sembol EKLEMEZ). Örnek: 10999.58 → "10.999,58".
+  /// İşlem listelerinde miktar gösterimi için kullanılır (para birimi ayrı
+  /// olarak metnin yanına yazıldığında sembol tekrarını önler).
+  static String formatAmount(double amount) {
+    final prefix = amount < 0 ? '-' : '';
+    final abs = amount.abs();
+    final parts = abs.toStringAsFixed(2).split('.');
+    return '$prefix${_addThousandDots(parts[0])},${parts[1]}';
+  }
+
   static String _addThousandDots(String intPart) {
     final buf = StringBuffer();
     final len = intPart.length;
@@ -33,26 +44,46 @@ abstract final class CurrencyFormatter {
     return buf.toString();
   }
 
+  // NOT: appCurrencies (utils/constants.dart) listesindeki değerler doğrudan
+  // hesap/işlem kaydına yazılıyor -- örn. "Gram Altın", "Cumhuriyet Altını".
+  // Önceden burada 'GRAM_ALTIN'/'CUMHURIYET_ALTINI' gibi snake_case sabitlerle
+  // karşılaştırılıyordu ki bu değerler hiçbir zaman gerçek kayıtlarla eşleşmiyordu
+  // -- bu yüzden altın (ve GBP) para birimleri seçilince simge her zaman
+  // varsayılan '₺' olarak kalıyordu. Artık appCurrencies'teki gerçek string'lerle
+  // (büyük/küçük harf duyarsız) karşılaştırılıyor.
   static String _symbol(String? currency) {
-    switch (currency?.toUpperCase()) {
+    switch (currency?.trim().toUpperCase()) {
       case 'USD':
       case 'DOLAR':
         return ' \$';
       case 'EUR':
       case 'EURO':
         return ' €';
+      case 'GBP':
+        return ' £';
+      case 'GRAM ALTIN':
       case 'GRAM_ALTIN':
         return ' gr';
+      case 'CUMHURIYET ALTINI':
       case 'CUMHURIYET_ALTINI':
-        return ' C.Altını';
+        return ' adet';
       default:
         return ' ₺';
     }
   }
 
   static String getLabel(String? currency) {
-    if (currency == 'CUMHURIYET_ALTINI') return 'Cumhuriyet Altını';
-    if (currency == 'GRAM_ALTIN') return 'Gram Altın';
-    return currency ?? 'TL';
+    switch (currency?.trim().toUpperCase()) {
+      case 'CUMHURIYET ALTINI':
+      case 'CUMHURIYET_ALTINI':
+        return 'Cumhuriyet Altını';
+      case 'GRAM ALTIN':
+      case 'GRAM_ALTIN':
+        return 'Gram Altın';
+      case null:
+        return 'TL';
+      default:
+        return currency!;
+    }
   }
 }

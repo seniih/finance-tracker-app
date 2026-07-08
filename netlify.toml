@@ -1,0 +1,25 @@
+# Netlify yapılandırması
+# Build: Flutter SDK'yı kurar, config.json'ı Netlify ortam değişkenlerinden
+# üretir (repo'da config.json YOK — bilinçli, .gitignore'da) ve web build alır.
+# Gerekli env değişkenleri (Site settings > Environment variables):
+#   SUPABASE_URL, SUPABASE_ANON_KEY
+
+[build]
+  command = "bash netlify_build.sh"
+  publish = "build/web"
+
+# Flutter web bir SPA: tüm yollar index.html'e dönmeli,
+# yoksa sayfa yenilemede 404 alınır.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Finans uygulaması için temel güvenlik başlıkları
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

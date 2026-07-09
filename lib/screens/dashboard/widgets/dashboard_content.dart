@@ -3,7 +3,7 @@ import '../../../utils/app_colors.dart';
 import '../../../utils/constants.dart';
 import '../../../models/account.dart';
 import '../../../models/contact.dart';
-import '../../projects_screen.dart';
+import '../../profit_centers_screen.dart';
 import '../../accounts_screen.dart';
 import '../../contacts_screen.dart';
 import '../../settings/settings_screen.dart';
@@ -11,6 +11,8 @@ import '../../categories_screen.dart';
 import '../../transactions/transactions_history_screen.dart';
 import '../../transactions/forms/transaction_form.dart';
 import '../../transactions/forms/transfer_form.dart';
+import '../../transactions/forms/purchase_form.dart';
+import '../../lands/sale_start_screen.dart';
 import '../home_screen.dart';
 
 class DashboardContent extends StatelessWidget {
@@ -46,8 +48,13 @@ class DashboardContent extends StatelessWidget {
       'transaction_new_payment' => const TransactionForm(key: ValueKey('new_payment'), fixedType: CategoryType.expense, withContact: true),
       'transaction_new_collection' => const TransactionForm(key: ValueKey('new_collection'), fixedType: CategoryType.income, withContact: true),
       'transaction_new_transfer' => const TransferForm(),
+      // Alış: projeye harcama formu (kasadan çıkar, proje maliyetine yazılır)
+      'transaction_new_purchase' => const PurchaseForm(key: ValueKey('new_purchase')),
+      // Satış: önce satılacak arsa seçilir, sonra satış formu açılır
+      'transaction_new_sale' => const SaleStartScreen(),
       'transactions_history' => const TransactionsHistoryScreen(),
-      'projects' => const ProjectsScreen(),
+      // Kar merkezi -> proje -> arsa + yatırımcı hiyerarşisinin giriş ekranı
+      'projects' => const ProfitCentersScreen(),
       'contacts' => ContactsScreen(
           selectedContact: selectedContact,
           onContactChanged: onContactChanged,

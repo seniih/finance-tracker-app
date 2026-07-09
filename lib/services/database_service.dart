@@ -2,12 +2,12 @@ import '../models/profile.dart';
 import '../models/contact_type.dart';
 import '../models/contact.dart';
 import '../models/account.dart';
+import '../models/profit_center.dart';
 import '../models/project.dart';
 import '../models/land.dart';
-import '../models/land_contact.dart';
-import '../models/land_investment.dart';
+import '../models/project_investor.dart';
+import '../models/project_investment.dart';
 import '../models/land_sale.dart';
-import '../models/land_sale_distribution.dart';
 import '../models/category.dart';
 import '../models/transaction.dart';
 import '../models/ledger_entry.dart';
@@ -42,38 +42,55 @@ abstract class DatabaseService {
   Future<void> updateAccount(Account account);
   Future<void> deleteAccount(String id);
 
+  // ── Profit Centers (Kar Merkezleri) ────────────────────────────────────────
+  // Hiyerarşinin tepesi: kar merkezi -> proje -> arsa + yatırımcı.
+  Future<List<ProfitCenter>> getProfitCenters();
+  Future<void> addProfitCenter(ProfitCenter profitCenter);
+  Future<void> updateProfitCenter(ProfitCenter profitCenter);
+  Future<void> deleteProfitCenter(String id);
+
   // ── Projects ───────────────────────────────────────────────────────────────
-  Future<List<Project>> getProjects();
+  Future<List<Project>> getProjects({String? profitCenterId});
   Future<void> addProject(Project project);
   Future<void> updateProject(Project project);
   Future<void> deleteProject(String id);
 
-  // ── Lands ──────────────────────────────────────────────────────────────────
+  // ── Lands (Projenin ürünleri) ──────────────────────────────────────────────
   Future<List<Land>> getLands({String? projectId});
   Future<void> addLand(Land land);
   Future<void> updateLand(Land land);
   Future<void> deleteLand(String id);
 
-  // ── Land Contacts (Yatırımcı/Ortak) ────────────────────────────────────────
-  Future<List<LandContact>> getLandContacts(String landId);
-  Future<void> addLandContact(LandContact landContact);
-  Future<void> updateLandContact(LandContact landContact);
-  Future<void> deleteLandContact(String id);
+  // ── Project Investors (Projeye sermaye koyanlar) ───────────────────────────
+  Future<List<ProjectInvestor>> getProjectInvestors(String projectId);
+  Future<void> addProjectInvestor(ProjectInvestor investor);
+  Future<void> updateProjectInvestor(ProjectInvestor investor);
+  Future<void> deleteProjectInvestor(String id);
 
-  // ── Land Investments (Yatırımcı Ödemeleri) ─────────────────────────────────
+  // ── Project Investments (Sermaye Ödemeleri) ────────────────────────────────
   // Her ödeme ayrı satır: tarih + TL tutar + o günkü USD kuru.
   // USD karşılığı DB'de hesaplanır (GENERATED kolon), buradan sadece okunur.
-  Future<void> addLandInvestment(LandInvestment investment);
-  Future<void> updateLandInvestment(LandInvestment investment);
-  Future<void> deleteLandInvestment(String id);
+  Future<void> addProjectInvestment(ProjectInvestment investment);
+  Future<void> updateProjectInvestment(ProjectInvestment investment);
+  Future<void> deleteProjectInvestment(String id);
 
-  // ── Land Sales (Arsa Satışı + Yüzdelik Dağıtım) ────────────────────────────
-  // Arsa başına en fazla bir satış (DB'de land_id UNIQUE). Satış kaydı
-  // dağıtım satırlarıyla birlikte oluşturulur; dağıtım tutarlarını DB
-  // trigger'ı hesaplar, arsa durumunu da otomatik 'sold' yapar.
+  // ── Land Sales (Arsa Satışı) ───────────────────────────────────────────────
+  // Arsa başına en fazla bir satış (DB'de land_id UNIQUE). Kullanıcı satış
+  // tutarı + kasa + kendi kar payı YÜZDESİNİ girer. Satış + kasa girişi tek
+  // Postgres transaction'ında yazılır (create_land_sale_with_cash RPC).
+  // Kalan tutarın yatırımcılara sermaye oranlı dağıtımını DB trigger'ı
+  // hesaplar (uygulama dağıtım yazamaz); arsa durumu otomatik 'sold' olur.
+  // Satış DÜZENLEME yok: kasa işlemiyle tutarlılık bozulmasın diye
+  // düzeltme = satışı silip yeniden kaydetmektir. Silmede bağlı kasa
+  // işlemini DB trigger'ı da siler.
   Future<LandSale?> getLandSale(String landId);
-  Future<void> createLandSale(LandSale sale, List<LandSaleDistribution> distributions);
+  Future<void> createLandSale(LandSale sale, {required String accountId});
   Future<void> deleteLandSale(String id);
+
+  // Cari başına toplam satış dağıtım borcu (TL): yatırımcılara satıştan
+  // doğan borçlar cari bakiyesine "ben borçluyum" olarak yansıtılır.
+  // Kaynak: investor_sale_debts view'i (borç = dağıtım satırları).
+  Future<Map<String, double>> getInvestorSaleDebts();
 
   // ── Categories ─────────────────────────────────────────────────────────────
   Future<List<Category>> getCategories(); // Hiyerarşik getirmeli

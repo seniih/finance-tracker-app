@@ -12,6 +12,7 @@ import 'forms/transaction_form.dart';
 import 'forms/transfer_form.dart';
 import 'forms/investment_in_form.dart';
 import 'forms/investment_out_form.dart';
+import 'forms/purchase_form.dart';
 
 class TransactionsHistoryScreen extends StatefulWidget {
   const TransactionsHistoryScreen({super.key});
@@ -74,11 +75,24 @@ class _TransactionsHistoryScreenState extends State<TransactionsHistoryScreen> {
     }
     if (!mounted) return;
 
+    // Satış işlemi land_sales kaydına bağlıdır; buradan düzenlenirse satış
+    // kaydıyla tutarsızlaşır. Düzeltme = arsa detayından satışı silip
+    // yeniden kaydetmek.
+    if (tr.transactionType == TransactionType.sale) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Satış işlemi buradan düzenlenemez. Arsa detayından satışı silip yeniden kaydedin.')));
+      return;
+    }
+
     final form = switch (tr.transactionType) {
       TransactionType.standard => TransactionForm(existingTransaction: tr, existingLedgers: ledgers),
       TransactionType.transfer => TransferForm(existingTransaction: tr, existingLedgers: ledgers),
       TransactionType.investmentIn => InvestmentInForm(existingTransaction: tr, existingLedgers: ledgers),
       TransactionType.investmentOut => InvestmentOutForm(existingTransaction: tr, existingLedgers: ledgers),
+      TransactionType.purchase => PurchaseForm(existingTransaction: tr, existingLedgers: ledgers),
+      // Yukarıda engellendi; switch'in eksiksiz olması için:
+      TransactionType.sale => TransactionForm(existingTransaction: tr, existingLedgers: ledgers),
     };
 
     final changed = await Navigator.push(context, MaterialPageRoute(builder: (_) => form));
@@ -138,6 +152,10 @@ class _TransactionsHistoryScreenState extends State<TransactionsHistoryScreen> {
         return AppColors.investmentIn;
       case TransactionType.investmentOut:
         return AppColors.investmentOut;
+      case TransactionType.purchase:
+        return AppColors.error;
+      case TransactionType.sale:
+        return AppColors.success;
     }
   }
 
@@ -151,6 +169,10 @@ class _TransactionsHistoryScreenState extends State<TransactionsHistoryScreen> {
         return Icons.download;
       case TransactionType.investmentOut:
         return Icons.upload;
+      case TransactionType.purchase:
+        return Icons.shopping_cart_outlined;
+      case TransactionType.sale:
+        return Icons.sell_outlined;
     }
   }
 
@@ -224,7 +246,8 @@ class _TransactionsHistoryScreenState extends State<TransactionsHistoryScreen> {
       itemBuilder: (context, index) {
         final tr = _transactions[index];
         final typeColor = _getTransactionColor(tr);
-        final isPositive = tr.transactionType == TransactionType.investmentIn || 
+        final isPositive = tr.transactionType == TransactionType.investmentIn ||
+            tr.transactionType == TransactionType.sale ||
             (tr.transactionType == TransactionType.standard && tr.category?.type == CategoryType.income);
         final amountPrefix = tr.transactionType == TransactionType.transfer ? '' : (isPositive ? '+' : '-');
         final displayLabel = tr.transactionType == TransactionType.standard && tr.category != null 

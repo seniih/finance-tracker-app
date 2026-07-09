@@ -7,24 +7,27 @@ import '../../utils/form_helpers.dart';
 import '../../utils/number_input_formatter.dart';
 import '../../utils/currency_formatter.dart';
 import '../../models/land.dart';
-import '../../models/land_contact.dart';
+import '../../models/project_investor.dart';
 import '../../models/land_sale.dart';
-import '../../models/land_sale_distribution.dart';
 import '../../models/contact.dart';
+import '../../models/account.dart';
 import '../../services/database_service.dart';
 import '../../services/supabase_database_service.dart';
 
-/// Arsa satış formu: satış tutarı + o günkü dolar kuru + tarih + alıcı,
-/// ardından satış tutarının yatırımcılara YÜZDE bazlı dağıtımı.
+/// Arsa satış formu: satış tutarı + o günkü dolar kuru + tarih + alıcı +
+/// GELİRİN GİRECEĞİ KASA + kullanıcının kendine ayırdığı KAR YÜZDESİ.
 ///
-/// Dağıtım yüzdeleri kullanıcı tarafından girilir (varsayılan olarak
-/// ortaklık yüzdeleriyle doldurulur ama serbestçe değiştirilebilir --
-/// yatırımcılar arasındaki anlaşmaya göre farklı olabilir). Pay tutarları
-/// canlı önizlemedir; kalıcı hesaplamayı DB trigger'ı yapar
-/// (sale_price_try * percentage / 100). Yüzde toplamı 100'ü aşamaz.
+/// Satış + kasa girişi tek Postgres transaction'ında kaydedilir
+/// (create_land_sale_with_cash RPC). Dağıtım yüzdesi girilmez: kar payı
+/// düşüldükten sonra kalan tutar, proje yatırımcılarına SERMAYE ORANLARINA
+/// göre dağıtılır ve yatırımcılara BORÇ olarak cari bakiyelerine yansır.
+/// Buradaki liste canlı önizlemedir; kalıcı hesaplamayı DB yapar
+/// (fn_distribute_land_sale -- uygulamanın dağıtım tablosuna yazma yetkisi yok).
+///
+/// Satış tutarı TL olduğundan yalnızca TRY kasalar seçilebilir.
 class LandSaleForm extends StatefulWidget {
   final Land land;
-  final List<LandContact> investors;
+  final List<ProjectInvestor> investors;
 
   const LandSaleForm({super.key, required this.land, required this.investors});
 
@@ -40,47 +43,43 @@ class _LandSaleFormState extends State<LandSaleForm> {
 
   final _priceController = TextEditingController();
   final _rateController = TextEditingController();
+  final _ownerProfitPctController = TextEditingController();
   final _descriptionController = TextEditingController();
   DateTime _saleDate = DateTime.now();
   String? _buyerContactId;
+  String? _accountId;
   List<Contact> _contacts = [];
-
-  /// land_contact_id -> yüzde alanı controller'ı
-  late final Map<String, TextEditingController> _pctControllers;
+  List<Account> _accounts = [];
 
   @override
   void initState() {
     super.initState();
-    // Varsayılan dağıtım = ortaklık yüzdesi; kullanıcı değiştirebilir.
-    _pctControllers = {
-      for (final inv in widget.investors)
-        inv.id: TextEditingController(
-          text: inv.sharePercentage != null
-              ? formatNumberForInput(inv.sharePercentage!)
-              : '',
-        ),
-    };
-    _loadContacts();
+    _loadData();
   }
 
   @override
   void dispose() {
     _priceController.dispose();
     _rateController.dispose();
+    _ownerProfitPctController.dispose();
     _descriptionController.dispose();
-    for (final c in _pctControllers.values) {
-      c.dispose();
-    }
     super.dispose();
   }
 
-  Future<void> _loadContacts() async {
+  Future<void> _loadData() async {
     try {
       final contacts = await _db.getContacts();
+      final accounts = await _db.getAccounts();
       if (!mounted) return;
-      setState(() => _contacts = contacts);
-    } catch (_) {
-      // Alıcı seçimi opsiyonel -- liste yüklenemezse form yine kullanılabilir.
+      setState(() {
+        _contacts = contacts;
+        // Satış tutarı TL: yalnızca TRY kasalar seçilebilir (para birimi
+        // uyumu DB'de de denetlenir -- fn_validate_ledgers).
+        _accounts = accounts.where((a) => a.currency == 'TRY').toList();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Hata: $e')));
     }
   }
 
@@ -89,13 +88,19 @@ class _LandSaleFormState extends State<LandSaleForm> {
 
   double? get _salePrice => parseFormattedNumber(_priceController.text);
   double? get _usdRate => parseFormattedNumber(_rateController.text);
+  double get _ownerProfitPct => parseFormattedNumber(_ownerProfitPctController.text) ?? 0;
 
-  double get _totalPercentage => _pctControllers.values
-      .fold(0.0, (s, c) => s + (parseFormattedNumber(c.text) ?? 0));
+  /// Sermayesi olan yatırımcılar (dağıtıma girecekler)
+  List<ProjectInvestor> get _fundedInvestors =>
+      widget.investors.where((i) => i.totalCapitalTry > 0).toList();
+
+  double get _totalCapital =>
+      _fundedInvestors.fold(0.0, (s, i) => s + i.totalCapitalTry);
 
   Future<void> _save() async {
     final price = _salePrice;
     final rate = _usdRate;
+    final pct = _ownerProfitPct;
 
     if (price == null || price <= 0) {
       ScaffoldMessenger.of(context)
@@ -107,36 +112,15 @@ class _LandSaleFormState extends State<LandSaleForm> {
           .showSnackBar(const SnackBar(content: Text('Geçerli bir dolar kuru girin.')));
       return;
     }
-
-    final total = _totalPercentage;
-    if (total > 100.001) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-              'Dağıtım yüzdelerinin toplamı %100\'ü aşamaz (şu an: %${CurrencyFormatter.formatAmount(total)}).')));
+    if (pct < 0 || pct > 100) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Kar yüzdesi 0-100 aralığında olmalı.')));
       return;
     }
-
-    // %100'den az dağıtım teknik olarak mümkün (kalan pay şirkete kalabilir)
-    // ama muhtemelen bir giriş hatasıdır -- kullanıcıya soralım.
-    if (total < 99.999) {
-      final proceed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Dağıtım %100 değil'),
-          content: Text(
-              'Yüzdelerin toplamı %${CurrencyFormatter.formatAmount(total)}. Kalan %${CurrencyFormatter.formatAmount(100 - total)} kimseye dağıtılmayacak. Devam edilsin mi?'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Düzelt')),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary, foregroundColor: Colors.white),
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Devam Et'),
-            ),
-          ],
-        ),
-      );
-      if (proceed != true) return;
+    if (_accountId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Satış gelirinin gireceği kasayı seçin.')));
+      return;
     }
 
     setState(() => _isLoading = true);
@@ -147,6 +131,7 @@ class _LandSaleFormState extends State<LandSaleForm> {
         landId: widget.land.id,
         salePriceTry: price,
         usdRate: rate,
+        ownerProfitPct: pct,
         saleDate: _saleDate,
         buyerContactId: _buyerContactId,
         description: _descriptionController.text.trim().isEmpty
@@ -154,26 +139,15 @@ class _LandSaleFormState extends State<LandSaleForm> {
             : _descriptionController.text.trim(),
       );
 
-      // Yüzdesi 0 veya boş olan yatırımcılar dağıtıma dahil edilmez.
-      final distributions = <LandSaleDistribution>[];
-      for (final inv in widget.investors) {
-        final pct = parseFormattedNumber(_pctControllers[inv.id]!.text);
-        if (pct != null && pct > 0) {
-          distributions.add(LandSaleDistribution(
-            id: '',
-            landSaleId: '',
-            landContactId: inv.id,
-            percentage: pct,
-          ));
-        }
-      }
-
-      await _db.createLandSale(sale, distributions);
+      // Satış + kasa girişi tek Postgres transaction'ında; dağıtımı DB
+      // trigger'ı sermaye oranlarına göre yazar.
+      await _db.createLandSale(sale, accountId: _accountId!);
 
       if (mounted) {
         Navigator.pop(context, true);
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Satış kaydedildi, arsa "Satıldı" durumuna alındı.')));
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Satış kaydedildi: tutar kasaya girdi, arsa "Satıldı" oldu, yatırımcı payları borç olarak yazıldı.')));
       }
     } catch (e) {
       if (mounted) {
@@ -188,8 +162,12 @@ class _LandSaleFormState extends State<LandSaleForm> {
     final price = _salePrice;
     final rate = _usdRate;
     final usd = (price != null && rate != null && rate > 0) ? price / rate : null;
-    final total = _totalPercentage;
-    final totalOk = total <= 100.001;
+    final pct = _ownerProfitPct;
+    final pctOk = pct >= 0 && pct <= 100;
+    final ownerProfit = (price != null && pctOk) ? price * pct / 100 : null;
+    final distributable =
+        (price != null && ownerProfit != null) ? price - ownerProfit : null;
+    final totalCapital = _totalCapital;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -265,6 +243,29 @@ class _LandSaleFormState extends State<LandSaleForm> {
                               ),
                             ),
                             const SizedBox(height: AppSpacing.md),
+                            // Satış geliri bu kasaya 'Satış' işlemi olarak girer
+                            // (satış + kasa girişi tek transaction'da kaydedilir).
+                            DropdownButtonFormField<String>(
+                              initialValue: _accountId,
+                              decoration:
+                                  buildInputDecoration('Kasa (Gelirin Gireceği Hesap)'),
+                              items: _accounts
+                                  .map((a) => DropdownMenuItem(
+                                      value: a.id, child: Text('${a.name} (TL)')))
+                                  .toList(),
+                              onChanged: (val) => setState(() => _accountId = val),
+                            ),
+                            if (_accounts.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.only(top: AppSpacing.sm),
+                                child: Text(
+                                  'TL kasa bulunamadı. Satış tutarı TL olduğundan önce '
+                                  'TL bir kasa/hesap açmalısınız.',
+                                  style:
+                                      TextStyle(fontSize: 12, color: AppColors.error),
+                                ),
+                              ),
+                            const SizedBox(height: AppSpacing.md),
                             DropdownButtonFormField<String>(
                               initialValue: _buyerContactId,
                               decoration: buildInputDecoration('Alıcı (opsiyonel)'),
@@ -285,97 +286,134 @@ class _LandSaleFormState extends State<LandSaleForm> {
                           ],
                         ),
                         FormSectionCard(
-                          title: 'Yüzdelik Dağıtım',
+                          title: 'Kar Payı & Dağıtım',
                           icon: Icons.pie_chart_outline,
-                          trailing: Container(
-                            padding:
-                                const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: (totalOk ? AppColors.success : AppColors.error)
-                                  .withValues(alpha: 0.1),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(
-                              'Toplam: %${CurrencyFormatter.formatAmount(total)}',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: totalOk ? AppColors.success : AppColors.error,
-                              ),
-                            ),
-                          ),
                           children: [
                             const Text(
-                              'Satış tutarı aşağıdaki yüzdelere göre paylaştırılır. '
-                              'Varsayılan değerler ortaklık yüzdeleridir, serbestçe değiştirebilirsiniz.',
+                              'Kendinize ayıracağınız kar yüzdesini girin. Kalan tutar, '
+                              'yatırımcılara projeye koydukları sermaye oranında otomatik '
+                              'dağıtılır ve size BORÇ olarak cari bakiyelerine yazılır.',
                               style:
                                   TextStyle(fontSize: 12, color: AppColors.textSecondary),
                             ),
                             const SizedBox(height: AppSpacing.md),
-                            ...widget.investors.map((inv) {
-                              final pct =
-                                  parseFormattedNumber(_pctControllers[inv.id]!.text);
-                              final share = (pct != null && price != null)
-                                  ? price * pct / 100
-                                  : null;
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: AppSpacing.md),
-                                child: Row(
-                                  children: [
-                                    Expanded(
-                                      flex: 3,
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            inv.contact?.name ?? 'Yatırımcı',
-                                            style: const TextStyle(
-                                                fontWeight: FontWeight.w600, fontSize: 14),
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          if (inv.sharePercentage != null)
+                            TextFormField(
+                              controller: _ownerProfitPctController,
+                              decoration: buildInputDecoration('Kar Yüzdem (%)'),
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(decimal: true),
+                              inputFormatters: [ThousandSeparatorInputFormatter()],
+                              onChanged: (_) => setState(() {}),
+                            ),
+                            if (!pctOk) ...[
+                              const SizedBox(height: AppSpacing.sm),
+                              const Text(
+                                'Kar yüzdesi 0-100 aralığında olmalı.',
+                                style: TextStyle(fontSize: 12, color: AppColors.error),
+                              ),
+                            ],
+                            if (ownerProfit != null && ownerProfit > 0) ...[
+                              const SizedBox(height: AppSpacing.sm),
+                              Text(
+                                'Kar payınız: ${CurrencyFormatter.format(ownerProfit, currency: 'TRY')}',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.info,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ],
+                            const SizedBox(height: AppSpacing.md),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(AppSpacing.md),
+                              decoration: BoxDecoration(
+                                color: AppColors.success.withValues(alpha: 0.08),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                distributable == null
+                                    ? 'Dağıtılacak tutar: satış tutarını girin'
+                                    : 'Dağıtılacak tutar: ${CurrencyFormatter.format(distributable, currency: 'TRY')}',
+                                style: const TextStyle(
+                                    color: AppColors.success,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 13),
+                              ),
+                            ),
+                            const SizedBox(height: AppSpacing.lg),
+                            if (_fundedInvestors.isEmpty)
+                              const Text(
+                                'Projede sermaye ödemesi olan yatırımcı yok -- satış '
+                                'kaydedilirse tutar kimseye dağıtılmaz.',
+                                style: TextStyle(fontSize: 12, color: AppColors.warning),
+                              )
+                            else
+                              ..._fundedInvestors.map((inv) {
+                                final ratio = totalCapital > 0
+                                    ? inv.totalCapitalTry / totalCapital
+                                    : 0.0;
+                                final share = distributable != null && distributable > 0
+                                    ? distributable * ratio
+                                    : null;
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        flex: 3,
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
                                             Text(
-                                              'Ortaklık: %${CurrencyFormatter.formatAmount(inv.sharePercentage!)}',
+                                              inv.contact?.name ?? 'Yatırımcı',
+                                              style: const TextStyle(
+                                                  fontWeight: FontWeight.w600, fontSize: 14),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            Text(
+                                              'Sermaye: ${CurrencyFormatter.format(inv.totalCapitalTry, currency: 'TRY')}',
                                               style: const TextStyle(
                                                   fontSize: 11,
                                                   color: AppColors.textSecondary),
                                             ),
-                                        ],
+                                          ],
+                                        ),
                                       ),
-                                    ),
-                                    const SizedBox(width: AppSpacing.md),
-                                    Expanded(
-                                      flex: 2,
-                                      child: TextFormField(
-                                        controller: _pctControllers[inv.id],
-                                        decoration: buildInputDecoration('Pay (%)'),
-                                        keyboardType: const TextInputType.numberWithOptions(
-                                            decimal: true),
-                                        inputFormatters: [
-                                          ThousandSeparatorInputFormatter()
-                                        ],
-                                        onChanged: (_) => setState(() {}),
+                                      const SizedBox(width: AppSpacing.md),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 8, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.primary.withValues(alpha: 0.08),
+                                          borderRadius: BorderRadius.circular(6),
+                                        ),
+                                        child: Text(
+                                          '%${CurrencyFormatter.formatAmount(ratio * 100)}',
+                                          style: const TextStyle(
+                                              fontSize: 11,
+                                              color: AppColors.primary,
+                                              fontWeight: FontWeight.w600),
+                                        ),
                                       ),
-                                    ),
-                                    const SizedBox(width: AppSpacing.md),
-                                    Expanded(
-                                      flex: 2,
-                                      child: Text(
-                                        share != null
-                                            ? CurrencyFormatter.format(share,
-                                                currency: 'TRY')
-                                            : '--',
-                                        textAlign: TextAlign.end,
-                                        style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: AppColors.success,
-                                            fontSize: 13),
+                                      const SizedBox(width: AppSpacing.md),
+                                      Expanded(
+                                        flex: 2,
+                                        child: Text(
+                                          share != null
+                                              ? CurrencyFormatter.format(share,
+                                                  currency: 'TRY')
+                                              : '--',
+                                          textAlign: TextAlign.end,
+                                          style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: AppColors.success,
+                                              fontSize: 13),
+                                        ),
                                       ),
-                                    ),
-                                  ],
-                                ),
-                              );
-                            }),
+                                    ],
+                                  ),
+                                );
+                              }),
                           ],
                         ),
                         ElevatedButton.icon(

@@ -16,7 +16,8 @@ enum ProjectStatus {
 }
 
 // DB'deki lands.status CHECK kısıtıyla birebir aynı değerler
-// (bkz. supabase/migrations/20260708150000_land_investment_system.sql)
+// (bkz. supabase/migrations/20260708150000_land_investment_system.sql --
+//  status kolonu orada eklendi; güncel yapı için 20260709130000_profit_center_structure.sql)
 enum LandStatus {
   purchased('purchased', 'Portföyde'),
   forSale('for_sale', 'Satışta'),
@@ -87,7 +88,11 @@ enum TransactionType {
   standard('standard', 'Standart İşlem'),
   transfer('transfer', 'Transfer'),
   investmentIn('investment_in', 'Yatırım Girişi'),
-  investmentOut('investment_out', 'Yatırım Çıkışı');
+  investmentOut('investment_out', 'Yatırım Çıkışı'),
+  // Alış: projeye yapılan her tür harcama (kasadan çıkar, proje maliyetine yazılır)
+  purchase('purchase', 'Alış'),
+  // Satış: arsa satış geliri (kasaya girer; land_sales kaydına bağlıdır)
+  sale('sale', 'Satış');
 
   final String value;
   final String label;

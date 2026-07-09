@@ -13,11 +13,11 @@ class Contact {
   final String? description;
 
   // Devir bakiyesi: uygulamayı kullanmaya başlamadan önceki borç/alacak
-  // durumu. İşaretli (signed) tek bir değer -- pozitif = cari bana borçlu,
-  // negatif = ben cariye borçluyum (ContactBalanceCalculator ile aynı
-  // sözleşme). Bkz. supabase/migrations/20260708130000_contacts_opening_balance.sql
-  final double openingBalance;
-  final String openingBalanceCurrency;
+  // durumu. Para birimine göre işaretli (signed) değerler --
+  // pozitif = cari bana borçlu, negatif = ben cariye borçluyum
+  // (ContactBalanceCalculator ile aynı sözleşme).
+  // Örnek: {"TRY": 5000, "USD": -200}
+  final Map<String, double> openingBalances;
 
   final DateTime? createdAt;
   final DateTime? updatedAt;
@@ -36,8 +36,7 @@ class Contact {
     this.iban,
     this.address,
     this.description,
-    this.openingBalance = 0.0,
-    this.openingBalanceCurrency = 'TRY',
+    this.openingBalances = const {},
     this.createdAt,
     this.updatedAt,
     this.contactType,
@@ -54,8 +53,7 @@ class Contact {
     String? iban,
     String? address,
     String? description,
-    double? openingBalance,
-    String? openingBalanceCurrency,
+    Map<String, double>? openingBalances,
     DateTime? createdAt,
     DateTime? updatedAt,
     ContactTypeModel? contactType,
@@ -71,8 +69,7 @@ class Contact {
       iban: iban ?? this.iban,
       address: address ?? this.address,
       description: description ?? this.description,
-      openingBalance: openingBalance ?? this.openingBalance,
-      openingBalanceCurrency: openingBalanceCurrency ?? this.openingBalanceCurrency,
+      openingBalances: openingBalances ?? this.openingBalances,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       contactType: contactType ?? this.contactType,
@@ -80,6 +77,24 @@ class Contact {
   }
 
   factory Contact.fromJson(Map<String, dynamic> json) {
+    // opening_balances JSONB → Map<String, double>
+    final rawBalances = json['opening_balances'];
+    final balances = <String, double>{};
+    if (rawBalances is Map) {
+      for (final entry in rawBalances.entries) {
+        final val = entry.value;
+        if (val is num && val != 0) {
+          balances[entry.key as String] = val.toDouble();
+        }
+      }
+    }
+    // Eski sisteme geri dönük uyumluluk (migration çalışmamışsa):
+    if (balances.isEmpty && json['opening_balance'] != null) {
+      final double oldBal = (json['opening_balance'] as num).toDouble();
+      final String oldCur = json['opening_balance_currency'] as String? ?? 'TRY';
+      if (oldBal != 0) balances[oldCur] = oldBal;
+    }
+
     return Contact(
       id: json['id'] as String,
       userId: json['user_id'] as String,
@@ -91,8 +106,7 @@ class Contact {
       iban: json['iban'] as String?,
       address: json['address'] as String?,
       description: json['description'] as String?,
-      openingBalance: (json['opening_balance'] as num?)?.toDouble() ?? 0.0,
-      openingBalanceCurrency: json['opening_balance_currency'] as String? ?? 'TRY',
+      openingBalances: balances,
       createdAt: json['created_at'] != null ? DateTime.parse(json['created_at'] as String) : null,
       updatedAt: json['updated_at'] != null ? DateTime.parse(json['updated_at'] as String) : null,
       contactType: json['contact_types'] != null ? ContactTypeModel.fromJson(json['contact_types']) : null,
@@ -114,8 +128,7 @@ class Contact {
       'iban': iban,
       'address': address,
       'description': description,
-      'opening_balance': openingBalance,
-      'opening_balance_currency': openingBalanceCurrency,
+      'opening_balances': openingBalances,
     };
   }
 }

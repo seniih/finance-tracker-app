@@ -1,12 +1,12 @@
-/// Bir yatırımcının bir arsaya yaptığı TEK bir ödeme kaydı.
+/// Bir yatırımcının PROJEYE koyduğu TEK bir sermaye ödemesi.
 ///
 /// Yatırımcı farklı tarihlerde farklı kurlarla ödeme yapabilir; "toplam
-/// yatırım" bu satırların toplamıdır. `amountUsd` DB'de GENERATED kolondur
+/// sermaye" bu satırların toplamıdır. `amountUsd` DB'de GENERATED kolondur
 /// (amount_try / usd_rate) -- uygulama bu alanı asla yazmaz, sadece okur.
-/// Bkz. supabase/migrations/20260708150000_land_investment_system.sql
-class LandInvestment {
+/// Bkz. supabase/migrations/20260709130000_profit_center_structure.sql
+class ProjectInvestment {
   final String id;
-  final String landContactId;
+  final String projectInvestorId;
 
   /// Ödenen TL tutarı
   final double amountTry;
@@ -23,9 +23,9 @@ class LandInvestment {
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
-  const LandInvestment({
+  const ProjectInvestment({
     required this.id,
-    required this.landContactId,
+    required this.projectInvestorId,
     required this.amountTry,
     this.usdRate,
     this.amountUsd,
@@ -36,9 +36,9 @@ class LandInvestment {
     this.updatedAt,
   });
 
-  LandInvestment copyWith({
+  ProjectInvestment copyWith({
     String? id,
-    String? landContactId,
+    String? projectInvestorId,
     double? amountTry,
     double? usdRate,
     double? amountUsd,
@@ -48,9 +48,9 @@ class LandInvestment {
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
-    return LandInvestment(
+    return ProjectInvestment(
       id: id ?? this.id,
-      landContactId: landContactId ?? this.landContactId,
+      projectInvestorId: projectInvestorId ?? this.projectInvestorId,
       amountTry: amountTry ?? this.amountTry,
       usdRate: usdRate ?? this.usdRate,
       amountUsd: amountUsd ?? this.amountUsd,
@@ -62,10 +62,10 @@ class LandInvestment {
     );
   }
 
-  factory LandInvestment.fromJson(Map<String, dynamic> json) {
-    return LandInvestment(
+  factory ProjectInvestment.fromJson(Map<String, dynamic> json) {
+    return ProjectInvestment(
       id: json['id'] as String,
-      landContactId: json['land_contact_id'] as String,
+      projectInvestorId: json['project_investor_id'] as String,
       amountTry: (json['amount_try'] as num).toDouble(),
       usdRate: (json['usd_rate'] as num?)?.toDouble(),
       amountUsd: (json['amount_usd'] as num?)?.toDouble(),
@@ -81,7 +81,7 @@ class LandInvestment {
     // amount_usd GENERATED kolon -- bilinçli olarak gönderilmiyor.
     return {
       if (id.isNotEmpty) 'id': id,
-      'land_contact_id': landContactId,
+      'project_investor_id': projectInvestorId,
       'amount_try': amountTry,
       // Null olsa da gönderilir: düzenlemede temizlenen kur/açıklama DB'de
       // de temizlensin (koşullu gönderim eski değeri bırakıyordu).

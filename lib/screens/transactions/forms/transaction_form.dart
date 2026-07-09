@@ -508,7 +508,7 @@ class _TransactionFormState extends State<TransactionForm> {
                               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                               decoration: buildInputDecoration(
                                 'Tutar',
-                                prefixIcon: const Icon(Icons.attach_money, color: AppColors.textSecondary),
+                                prefixIcon: const Icon(Icons.payments, color: AppColors.textSecondary),
                               ),
                               keyboardType: const TextInputType.numberWithOptions(decimal: true),
                               inputFormatters: [ThousandSeparatorInputFormatter()],

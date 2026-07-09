@@ -1,90 +1,54 @@
-import 'land_contact.dart';
+import 'project_investor.dart';
 
-/// Satış tutarının bir yatırımcıya düşen payı.
+/// Satış tutarının bir PROJE yatırımcısına düşen payı.
 ///
-/// Yüzdeyi KULLANICI girer (ortaklık yüzdesinden farklı olabilir);
-/// `amountTry` DB trigger'ı tarafından hesaplanır (sale_price_try *
-/// percentage / 100) -- uygulama yazmaz, sadece okur. Yüzde toplamının
-/// 100'ü aşması DB seviyesinde engellenir.
-/// Bkz. supabase/migrations/20260708150000_land_investment_system.sql
+/// TAMAMEN DB tarafından hesaplanır ve yazılır (uygulamanın tabloya yazma
+/// yetkisi yok, sadece okur): (satış - kullanıcının kar payı), yatırımcılara
+/// sermaye oranlarına göre dağıtılır. `capitalBasisTry` hesap anındaki
+/// toplam sermayeyi şeffaflık için saklar.
+/// Bkz. supabase/migrations/20260709130000_profit_center_structure.sql
 class LandSaleDistribution {
   final String id;
   final String landSaleId;
-  final String landContactId;
+  final String projectInvestorId;
 
-  /// Kullanıcının girdiği dağıtım yüzdesi (0-100)
-  final double percentage;
+  /// Hesap anındaki toplam sermayesi (TL) -- DB yazar (readonly)
+  final double capitalBasisTry;
 
   /// Yatırımcıya düşen TL tutarı -- DB hesaplar (readonly)
   final double amountTry;
 
-  final String? notes;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
   // Joined relations
-  final LandContact? landContact;
+  final ProjectInvestor? projectInvestor;
 
   const LandSaleDistribution({
     required this.id,
     required this.landSaleId,
-    required this.landContactId,
-    required this.percentage,
-    this.amountTry = 0.0,
-    this.notes,
+    required this.projectInvestorId,
+    required this.capitalBasisTry,
+    required this.amountTry,
     this.createdAt,
     this.updatedAt,
-    this.landContact,
+    this.projectInvestor,
   });
-
-  LandSaleDistribution copyWith({
-    String? id,
-    String? landSaleId,
-    String? landContactId,
-    double? percentage,
-    double? amountTry,
-    String? notes,
-    DateTime? createdAt,
-    DateTime? updatedAt,
-    LandContact? landContact,
-  }) {
-    return LandSaleDistribution(
-      id: id ?? this.id,
-      landSaleId: landSaleId ?? this.landSaleId,
-      landContactId: landContactId ?? this.landContactId,
-      percentage: percentage ?? this.percentage,
-      amountTry: amountTry ?? this.amountTry,
-      notes: notes ?? this.notes,
-      createdAt: createdAt ?? this.createdAt,
-      updatedAt: updatedAt ?? this.updatedAt,
-      landContact: landContact ?? this.landContact,
-    );
-  }
 
   factory LandSaleDistribution.fromJson(Map<String, dynamic> json) {
     return LandSaleDistribution(
       id: json['id'] as String,
       landSaleId: json['land_sale_id'] as String,
-      landContactId: json['land_contact_id'] as String,
-      percentage: (json['percentage'] as num).toDouble(),
-      amountTry: (json['amount_try'] as num?)?.toDouble() ?? 0.0,
-      notes: json['notes'] as String?,
+      projectInvestorId: json['project_investor_id'] as String,
+      capitalBasisTry: (json['capital_basis_try'] as num).toDouble(),
+      amountTry: (json['amount_try'] as num).toDouble(),
       createdAt: json['created_at'] != null ? DateTime.parse(json['created_at'] as String) : null,
       updatedAt: json['updated_at'] != null ? DateTime.parse(json['updated_at'] as String) : null,
-      landContact: json['land_contacts'] != null
-          ? LandContact.fromJson(json['land_contacts'] as Map<String, dynamic>)
+      projectInvestor: json['project_investors'] != null
+          ? ProjectInvestor.fromJson(json['project_investors'] as Map<String, dynamic>)
           : null,
     );
   }
 
-  Map<String, dynamic> toJson() {
-    // amount_try DB trigger'ı tarafından hesaplanır -- gönderilmiyor.
-    return {
-      if (id.isNotEmpty) 'id': id,
-      'land_sale_id': landSaleId,
-      'land_contact_id': landContactId,
-      'percentage': percentage,
-      if (notes != null) 'notes': notes,
-    };
-  }
+  // toJson yok: bu tabloya uygulama hiçbir zaman yazmaz.
 }

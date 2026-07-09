@@ -1,65 +1,50 @@
-import 'profit_center.dart';
-
-/// Proje: bir kar merkezine bağlıdır. Projenin ürünleri arsalardır (lands),
-/// sermayesini yatırımcılar (project_investors) koyar.
+/// Kar merkezi: projeleri gruplayan üst seviye (basit gruplama --
+/// isim + açıklama). Hiyerarşi: kar merkezi -> proje -> arsa + yatırımcı.
 /// Bkz. supabase/migrations/20260709130000_profit_center_structure.sql
-class Project {
+class ProfitCenter {
   final String id;
   final String userId;
-  final String profitCenterId;
   final String name;
   final String? description;
 
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
-  // Joined relations
-  final ProfitCenter? profitCenter;
-
-  const Project({
+  const ProfitCenter({
     required this.id,
     required this.userId,
-    required this.profitCenterId,
     required this.name,
     this.description,
     this.createdAt,
     this.updatedAt,
-    this.profitCenter,
   });
 
-  Project copyWith({
+  ProfitCenter copyWith({
     String? id,
     String? userId,
-    String? profitCenterId,
     String? name,
     String? description,
     DateTime? createdAt,
     DateTime? updatedAt,
-    ProfitCenter? profitCenter,
   }) {
-    return Project(
+    return ProfitCenter(
       id: id ?? this.id,
       userId: userId ?? this.userId,
-      profitCenterId: profitCenterId ?? this.profitCenterId,
       name: name ?? this.name,
       description: description ?? this.description,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
-      profitCenter: profitCenter ?? this.profitCenter,
     );
   }
 
-  factory Project.fromJson(Map<String, dynamic> json) {
-    return Project(
+  factory ProfitCenter.fromJson(Map<String, dynamic> json) {
+    return ProfitCenter(
       id: json['id'] as String,
       userId: json['user_id'] as String,
-      profitCenterId: json['profit_center_id'] as String,
       name: json['name'] as String,
       description: json['description'] as String?,
       createdAt: json['created_at'] != null ? DateTime.parse(json['created_at'] as String) : null,
       updatedAt: json['updated_at'] != null ? DateTime.parse(json['updated_at'] as String) : null,
-      profitCenter:
-          json['profit_centers'] != null ? ProfitCenter.fromJson(json['profit_centers']) : null,
     );
   }
 
@@ -67,7 +52,6 @@ class Project {
     return {
       if (id.isNotEmpty) 'id': id,
       'user_id': userId,
-      'profit_center_id': profitCenterId,
       'name': name,
       // Null olsa da gönderilir: düzenlemede boşaltılan açıklama temizlensin.
       'description': description,

@@ -19,20 +19,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   static const List<MenuItem> _menuItems = [
     MenuItem(route: 'home', label: 'Ana Sayfa', icon: Icons.space_dashboard_outlined),
+    MenuItem(route: 'transactions_history', label: 'Tüm İşlemler', icon: Icons.list_alt),
 
     MenuItem(label: 'Finansal İşlemler', isHeader: true),
-    MenuItem(route: 'transactions_history', label: 'Tüm İşlemler', icon: Icons.list_alt),
     MenuItem(route: 'transaction_new_expense', label: 'Gider Ekle', icon: Icons.trending_down),
     MenuItem(route: 'transaction_new_income', label: 'Gelir Ekle', icon: Icons.trending_up),
     MenuItem(route: 'transaction_new_payment', label: 'Ödeme', icon: Icons.call_made),
     MenuItem(route: 'transaction_new_collection', label: 'Tahsilat', icon: Icons.call_received),
     MenuItem(route: 'transaction_new_transfer', label: 'Yeni Transfer', icon: Icons.swap_horiz),
-    // Not: Yatırım girişi/çıkışı artık Projeler ekranından (ilgili arsa üzerinden) yapılıyor.
+    // Alış: projeye harcama (kasadan çıkar, maliyete yazılır).
+    // Satış: arsa seçilir, gelir kasaya girer, yatırımcılara borç dağıtılır.
+    MenuItem(route: 'transaction_new_purchase', label: 'Alış', icon: Icons.shopping_cart_outlined),
+    MenuItem(route: 'transaction_new_sale', label: 'Satış', icon: Icons.sell_outlined),
+    // Not: Yatırım girişi/çıkışı artık Kar Merkezleri > proje detayından (ilgili arsa üzerinden) yapılıyor.
 
     MenuItem(label: 'Yönetim', isHeader: true),
     MenuItem(route: 'accounts', label: 'Kasalar', icon: Icons.account_balance_wallet),
     MenuItem(route: 'contacts', label: 'Cariler', icon: Icons.people),
-    MenuItem(route: 'projects', label: 'Projeler', icon: Icons.business),
+    MenuItem(route: 'projects', label: 'Kar Merkezleri', icon: Icons.account_tree_outlined),
     MenuItem(route: 'categories', label: 'Kategoriler', icon: Icons.category),
     
     MenuItem(label: 'Sistem', isHeader: true),

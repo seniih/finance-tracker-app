@@ -287,7 +287,7 @@ class _InvestmentOutFormState extends State<InvestmentOutForm> {
                         ),
                         TextFormField(
                           controller: _amountController,
-                          decoration: buildInputDecoration('Tutar', prefixIcon: const Icon(Icons.attach_money, color: AppColors.textSecondary)),
+                          decoration: buildInputDecoration('Tutar', prefixIcon: const Icon(Icons.payments, color: AppColors.textSecondary)),
                           keyboardType: const TextInputType.numberWithOptions(decimal: true),
                           inputFormatters: [ThousandSeparatorInputFormatter()],
                           validator: (val) {

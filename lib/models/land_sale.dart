@@ -5,7 +5,13 @@ import 'land_sale_distribution.dart';
 /// (DB'de land_id UNIQUE). `salePriceUsd` GENERATED kolondur -- uygulama
 /// yazmaz, sadece okur. Satış kaydı eklenince DB trigger'ı arsayı 'sold'
 /// yapar, satış silinirse 'purchased'a döndürür.
-/// Bkz. supabase/migrations/20260708150000_land_investment_system.sql
+///
+/// Kullanıcı her satışta KENDİSİ için bir kar payı YÜZDESİ (ownerProfitPct)
+/// girer; TL karşılığını (ownerProfitTry) DB hesaplar. Kalan tutar proje
+/// yatırımcılarına sermaye oranlarına göre DB tarafından otomatik dağıtılır
+/// (distributions -- readonly) ve yatırımcılara borç olarak izlenir.
+/// Satış geliri seçilen kasaya 'sale' tipli işlemle girer (transactionId).
+/// Bkz. supabase/migrations/20260709140000_purchase_sale_cash.sql
 class LandSale {
   final String id;
   final String landId;
@@ -18,6 +24,15 @@ class LandSale {
 
   /// USD karşılığı -- DB hesaplar (readonly)
   final double? salePriceUsd;
+
+  /// Kullanıcının kendine ayırdığı kar payı yüzdesi (0-100)
+  final double ownerProfitPct;
+
+  /// Kar payının TL karşılığı -- DB hesaplar (GENERATED, readonly)
+  final double ownerProfitTry;
+
+  /// Satış gelirinin girdiği kasa işlemi ('sale' tipli transaction)
+  final String? transactionId;
 
   final DateTime saleDate;
   final String? buyerContactId;
@@ -35,6 +50,9 @@ class LandSale {
     required this.salePriceTry,
     this.usdRate,
     this.salePriceUsd,
+    this.ownerProfitPct = 0.0,
+    this.ownerProfitTry = 0.0,
+    this.transactionId,
     required this.saleDate,
     this.buyerContactId,
     this.description,
@@ -50,6 +68,9 @@ class LandSale {
     double? salePriceTry,
     double? usdRate,
     double? salePriceUsd,
+    double? ownerProfitPct,
+    double? ownerProfitTry,
+    String? transactionId,
     DateTime? saleDate,
     String? buyerContactId,
     String? description,
@@ -64,6 +85,9 @@ class LandSale {
       salePriceTry: salePriceTry ?? this.salePriceTry,
       usdRate: usdRate ?? this.usdRate,
       salePriceUsd: salePriceUsd ?? this.salePriceUsd,
+      ownerProfitPct: ownerProfitPct ?? this.ownerProfitPct,
+      ownerProfitTry: ownerProfitTry ?? this.ownerProfitTry,
+      transactionId: transactionId ?? this.transactionId,
       saleDate: saleDate ?? this.saleDate,
       buyerContactId: buyerContactId ?? this.buyerContactId,
       description: description ?? this.description,
@@ -81,6 +105,9 @@ class LandSale {
       salePriceTry: (json['sale_price_try'] as num).toDouble(),
       usdRate: (json['usd_rate'] as num?)?.toDouble(),
       salePriceUsd: (json['sale_price_usd'] as num?)?.toDouble(),
+      ownerProfitPct: (json['owner_profit_pct'] as num?)?.toDouble() ?? 0.0,
+      ownerProfitTry: (json['owner_profit_try'] as num?)?.toDouble() ?? 0.0,
+      transactionId: json['transaction_id'] as String?,
       saleDate: DateTime.parse(json['sale_date'] as String),
       buyerContactId: json['buyer_contact_id'] as String?,
       description: json['description'] as String?,
@@ -96,11 +123,13 @@ class LandSale {
   }
 
   Map<String, dynamic> toJson() {
-    // sale_price_usd GENERATED kolon -- bilinçli olarak gönderilmiyor.
+    // sale_price_usd ve owner_profit_try GENERATED kolon, transaction_id
+    // RPC tarafından atanır -- bilinçli olarak gönderilmiyorlar.
     return {
       if (id.isNotEmpty) 'id': id,
       'land_id': landId,
       'sale_price_try': salePriceTry,
+      'owner_profit_pct': ownerProfitPct,
       if (usdRate != null) 'usd_rate': usdRate,
       'sale_date': saleDate.toIso8601String().split('T').first,
       if (buyerContactId != null) 'buyer_contact_id': buyerContactId,

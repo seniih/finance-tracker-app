@@ -12,37 +12,38 @@ import '../../../services/supabase_database_service.dart';
 import '../../../models/account.dart';
 import '../../../models/contact.dart';
 import '../../../models/project.dart';
-import '../../../models/land.dart';
 import '../../../models/transaction.dart';
 import '../../../models/ledger_entry.dart';
 
-/// [fixedProject]/[fixedLand] verilirse (Projeler ekranından belirli bir
-/// arsa için açıldığında) proje/arsa alanları kilitli gösterilir. Aksi halde
-/// (ör. genel bir işlemi düzenlerken) normal seçilebilir dropdown olarak kalır.
-class InvestmentInForm extends StatefulWidget {
+/// Alış formu: projeye yapılan HER TÜR harcama (arsa alımı, tapu, komisyon,
+/// inşaat...). Kasadan çıkar (credit ledger) ve projenin toplam maliyetine
+/// yazılır (maliyet = projenin 'purchase' işlemlerinin toplamı). Arsa
+/// ayrımı bilinçli olarak yok -- tüm alışlar proje maliyetidir.
+///
+/// [fixedProject] verilirse (proje detayından açıldığında) proje kilitli
+/// gösterilir; işlem geçmişinden düzenlemede seçilebilir dropdown olur.
+class PurchaseForm extends StatefulWidget {
   final Project? fixedProject;
-  final Land? fixedLand;
   final TransactionModel? existingTransaction;
   final List<LedgerEntry>? existingLedgers;
 
-  const InvestmentInForm({
+  const PurchaseForm({
     super.key,
     this.fixedProject,
-    this.fixedLand,
     this.existingTransaction,
     this.existingLedgers,
   });
 
   @override
-  State<InvestmentInForm> createState() => _InvestmentInFormState();
+  State<PurchaseForm> createState() => _PurchaseFormState();
 }
 
-class _InvestmentInFormState extends State<InvestmentInForm> {
+class _PurchaseFormState extends State<PurchaseForm> {
   final DatabaseService _db = SupabaseDatabaseService();
   final _formKey = GlobalKey<FormState>();
 
   bool get _isEditing => widget.existingTransaction != null;
-  bool get _isLocked => widget.fixedProject != null || widget.fixedLand != null;
+  bool get _isLocked => widget.fixedProject != null;
 
   bool _isLoading = false;
   DateTime _selectedDate = DateTime.now();
@@ -54,12 +55,10 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
   List<Account> _accounts = [];
   List<Contact> _contacts = [];
   List<Project> _projects = [];
-  List<Land> _lands = [];
 
   String? _selectedAccountId;
   String? _selectedContactId;
   String? _selectedProjectId;
-  String? _selectedLandId;
 
   Account? get _selectedAccount {
     if (_selectedAccountId == null) return null;
@@ -83,7 +82,6 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
   void initState() {
     super.initState();
     if (widget.fixedProject != null) _selectedProjectId = widget.fixedProject!.id;
-    if (widget.fixedLand != null) _selectedLandId = widget.fixedLand!.id;
 
     final tr = widget.existingTransaction;
     if (tr != null) {
@@ -93,7 +91,6 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
       _descriptionController.text = tr.description ?? '';
       _selectedContactId = tr.contactId;
       _selectedProjectId = tr.projectId ?? _selectedProjectId;
-      _selectedLandId = tr.landId ?? _selectedLandId;
       final ledgers = widget.existingLedgers;
       if (ledgers != null && ledgers.isNotEmpty) {
         _selectedAccountId = ledgers.first.accountId;
@@ -108,14 +105,12 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
       final accounts = await _db.getAccounts();
       final contacts = await _db.getContacts();
       final projects = _isLocked ? <Project>[] : await _db.getProjects();
-      final lands = _isLocked ? <Land>[] : await _db.getLands();
 
       if (!mounted) return;
       setState(() {
         _accounts = accounts;
         _contacts = contacts;
         _projects = projects;
-        _lands = lands;
         _isLoading = false;
       });
     } catch (e) {
@@ -123,6 +118,17 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Hata: $e')));
     }
+  }
+
+  /// Sidebar'dan (route içine gömülü) kullanılırken kayıt sonrası formu
+  /// sıfırlar; kasa/para birimi/tarih, art arda giriş kolay olsun diye korunur.
+  void _resetForm() {
+    _amountController.clear();
+    _descriptionController.clear();
+    setState(() {
+      _selectedContactId = null;
+      if (!_isLocked) _selectedProjectId = null;
+    });
   }
 
   Future<void> _selectDate(BuildContext context) async {
@@ -140,17 +146,20 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
-    if (_currency == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lütfen bir para birimi seçin.')));
+    if (_selectedProjectId == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Lütfen bir proje seçin -- alış proje maliyetine yazılır.')));
       return;
     }
     if (_selectedAccountId == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lütfen bir hesap/kasa seçin.')));
       return;
     }
-    // Para birimi hesabınkiyle aynı olmalı: hesap bakiyesi ledger tutarlarının
-    // toplamından hesaplanır (ledger'da para birimi tutulmaz), farklı birimde
-    // kayıt bakiyeyi bozar. Aynı kural DB'de de denetleniyor.
+    if (_currency == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Lütfen bir para birimi seçin.')));
+      return;
+    }
+    // Para birimi hesabınkiyle aynı olmalı (bakiye bozulmasın; DB de denetler).
     final account = _selectedAccount;
     if (account != null && _currency != account.currency) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -174,9 +183,8 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
       final transaction = TransactionModel(
         id: _isEditing ? widget.existingTransaction!.id : '',
         userId: '',
-        transactionType: TransactionType.investmentIn,
+        transactionType: TransactionType.purchase,
         projectId: _selectedProjectId,
-        landId: _selectedLandId,
         contactId: _selectedContactId,
         // Hesap bilgisi asıl olarak ledger'da; işlem satırına da yazılır.
         accountId: _selectedAccountId,
@@ -188,8 +196,9 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
         createdAt: DateTime.now(),
       );
 
+      // Alış = kasadan para çıkışı (credit)
       final ledgers = [
-        LedgerEntry(id: '', transactionId: '', accountId: _selectedAccountId, entryType: 'debit', amount: amount),
+        LedgerEntry(id: '', transactionId: '', accountId: _selectedAccountId, entryType: 'credit', amount: amount),
       ];
 
       if (_isEditing) {
@@ -199,9 +208,17 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
       }
 
       if (mounted) {
-        Navigator.pop(context, true);
+        final navigator = Navigator.of(context);
+        setState(() => _isLoading = false);
+        if (navigator.canPop()) {
+          // Ayrı sayfa olarak açıldıysa (proje detayı/düzenleme) geri dön.
+          navigator.pop(true);
+        } else {
+          // Sidebar route'una gömülüyse pop edilecek sayfa yok.
+          _resetForm();
+        }
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_isEditing ? 'Yatırım girişi güncellendi!' : 'Yatırım girişi başarıyla eklendi!')),
+          SnackBar(content: Text(_isEditing ? 'Alış güncellendi!' : 'Alış kaydedildi, proje maliyetine eklendi.')),
         );
       }
     } catch (e) {
@@ -216,12 +233,10 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: CustomAppBar(title: _isEditing ? 'Yatırım Girişini Düzenle' : 'Yeni Yatırım Girişi', icon: Icons.download),
-      body: Stack(
-        children: [
-          IgnorePointer(
-            ignoring: _isLoading,
-            child: Form(
+      appBar: CustomAppBar(title: _isEditing ? 'Alışı Düzenle' : 'Yeni Alış', icon: Icons.shopping_cart_outlined),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+          : Form(
               key: _formKey,
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(AppSpacing.lg),
@@ -230,8 +245,8 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
                   children: [
                     if (_isLocked)
                       FormSectionCard(
-                        title: 'Proje / Arsa',
-                        icon: Icons.landscape_outlined,
+                        title: 'Proje',
+                        icon: Icons.business_outlined,
                         children: [
                           Row(
                             children: [
@@ -245,23 +260,25 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
                               ),
                             ],
                           ),
-                          if (widget.fixedLand != null)
-                            Row(
-                              children: [
-                                const Icon(Icons.landscape_outlined, size: 16, color: AppColors.textSecondary),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    widget.fixedLand!.title,
-                                    style: const TextStyle(fontWeight: FontWeight.w600, color: AppColors.textPrimary),
-                                  ),
-                                ),
-                              ],
-                            ),
+                        ],
+                      )
+                    else
+                      FormSectionCard(
+                        title: 'Proje',
+                        icon: Icons.business_outlined,
+                        children: [
+                          DropdownButtonFormField<String>(
+                            decoration: buildInputDecoration('Proje (Maliyetin Yazılacağı)'),
+                            initialValue: _selectedProjectId,
+                            hint: const Text('Seçiniz'),
+                            items: _projects.map((p) => DropdownMenuItem(value: p.id, child: Text(p.name))).toList(),
+                            onChanged: (val) => setState(() => _selectedProjectId = val),
+                            validator: (val) => val == null ? 'Lütfen bir proje seçin.' : null,
+                          ),
                         ],
                       ),
                     FormSectionCard(
-                      title: 'İşlem Detayları',
+                      title: 'Alış Detayları',
                       icon: Icons.event_note_outlined,
                       children: [
                         Row(
@@ -303,7 +320,7 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
                       ],
                     ),
                     FormSectionCard(
-                      title: 'Hesap',
+                      title: 'Kasa (Paranın Çıktığı Hesap)',
                       icon: Icons.account_balance_wallet_outlined,
                       children: [
                         DropdownButtonFormField<String>(
@@ -322,11 +339,11 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
                       ],
                     ),
                     FormSectionCard(
-                      title: 'İlişkili Kayıtlar (Opsiyonel)',
+                      title: 'Satıcı (Opsiyonel)',
                       icon: Icons.link,
                       children: [
                         DropdownButtonFormField<String>(
-                          decoration: buildInputDecoration('Cari (Yatırımcı)'),
+                          decoration: buildInputDecoration('Cari (Kimden Alındı)'),
                           initialValue: _selectedContactId,
                           hint: const Text('Seçiniz'),
                           items: [
@@ -335,37 +352,6 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
                           ],
                           onChanged: (val) => setState(() => _selectedContactId = val),
                         ),
-                        if (!_isLocked)
-                          Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: DropdownButtonFormField<String>(
-                                  decoration: buildInputDecoration('Proje'),
-                                  initialValue: _selectedProjectId,
-                                  hint: const Text('Seçiniz'),
-                                  items: [
-                                    const DropdownMenuItem<String>(value: null, child: Text('Yok')),
-                                    ..._projects.map((p) => DropdownMenuItem(value: p.id, child: Text(p.name))),
-                                  ],
-                                  onChanged: (val) => setState(() => _selectedProjectId = val),
-                                ),
-                              ),
-                              const SizedBox(width: AppSpacing.md),
-                              Expanded(
-                                child: DropdownButtonFormField<String>(
-                                  decoration: buildInputDecoration('Arsa'),
-                                  initialValue: _selectedLandId,
-                                  hint: const Text('Seçiniz'),
-                                  items: [
-                                    const DropdownMenuItem<String>(value: null, child: Text('Yok')),
-                                    ..._lands.map((l) => DropdownMenuItem(value: l.id, child: Text(l.title))),
-                                  ],
-                                  onChanged: (val) => setState(() => _selectedLandId = val),
-                                ),
-                              ),
-                            ],
-                          ),
                       ],
                     ),
                     FormSectionCard(
@@ -374,7 +360,7 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
                       children: [
                         TextFormField(
                           controller: _descriptionController,
-                          decoration: buildInputDecoration('Açıklama (Opsiyonel)'),
+                          decoration: buildInputDecoration('Açıklama (ör. tapu masrafı, arsa alımı...)'),
                           maxLines: 3,
                         ),
                       ],
@@ -383,41 +369,28 @@ class _InvestmentInFormState extends State<InvestmentInForm> {
                 ),
               ),
             ),
-          ),
-          if (_isLoading)
-            const Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: LinearProgressIndicator(
-                color: AppColors.primary,
-                backgroundColor: Colors.transparent,
-                minHeight: 3,
+      bottomNavigationBar: _isLoading
+          ? null
+          : SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.lg),
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  icon: Icon(_isEditing ? Icons.check_circle_outline : Icons.shopping_cart_outlined),
+                  label: Text(
+                    _isEditing ? 'Değişiklikleri Kaydet' : 'Alışı Kaydet',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  // Çift gönderim koruması: kayıt sürerken buton devre dışı.
+                  onPressed: _isLoading ? null : _save,
+                ),
               ),
             ),
-        ],
-      ),
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(AppSpacing.lg, 0, AppSpacing.lg, AppSpacing.lg),
-          child: ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              backgroundColor: AppColors.investmentIn,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            icon: _isLoading 
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) 
-                : Icon(_isEditing ? Icons.check_circle_outline : Icons.download),
-            label: Text(
-              _isEditing ? 'Değişiklikleri Kaydet' : 'Yatırım Girişini Kaydet',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            onPressed: _isLoading ? null : _save,
-          ),
-        ),
-      ),
     );
   }
 

@@ -779,19 +779,27 @@ class _HomeScreenState extends State<HomeScreen> {
                   TransactionType.transfer => AppColors.info,
                   TransactionType.investmentIn => AppColors.investmentIn,
                   TransactionType.investmentOut => AppColors.investmentOut,
+                  TransactionType.purchase => AppColors.error,
+                  TransactionType.sale => AppColors.success,
                 };
                 final icon = switch (tr.transactionType) {
                   TransactionType.standard => isIncome ? Icons.trending_up : Icons.trending_down,
                   TransactionType.transfer => Icons.swap_horiz,
                   TransactionType.investmentIn => Icons.download,
                   TransactionType.investmentOut => Icons.upload,
+                  TransactionType.purchase => Icons.shopping_cart_outlined,
+                  TransactionType.sale => Icons.sell_outlined,
                 };
                 final label = tr.transactionType == TransactionType.standard && tr.category != null
                     ? tr.category!.name
                     : tr.transactionType.label;
                 final prefix = tr.transactionType == TransactionType.transfer
                     ? ''
-                    : ((isIncome || tr.transactionType == TransactionType.investmentIn) ? '+' : '-');
+                    : ((isIncome ||
+                            tr.transactionType == TransactionType.investmentIn ||
+                            tr.transactionType == TransactionType.sale)
+                        ? '+'
+                        : '-');
 
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 6),

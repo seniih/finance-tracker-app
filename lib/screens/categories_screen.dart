@@ -343,6 +343,43 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                                 backgroundColor: typeColor.withValues(alpha: 0.1),
                                 child: Icon(_getTypeIcon(parentCat.type), color: typeColor),
                               ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  PopupMenuButton<String>(
+                                    icon: const Icon(Icons.more_vert, color: AppColors.textSecondary, size: 20),
+                                    onSelected: (value) {
+                                      switch (value) {
+                                        case 'edit':
+                                          _showAddEditDialog(parentCat);
+                                          break;
+                                        case 'delete':
+                                          _deleteCategory(parentCat);
+                                          break;
+                                      }
+                                    },
+                                    itemBuilder: (context) => [
+                                      const PopupMenuItem(
+                                        value: 'edit',
+                                        child: Row(children: [
+                                          Icon(Icons.edit_outlined, size: 18, color: Colors.amber),
+                                          SizedBox(width: AppSpacing.sm),
+                                          Text('Düzenle', style: TextStyle(color: Colors.amber)),
+                                        ]),
+                                      ),
+                                      const PopupMenuItem(
+                                        value: 'delete',
+                                        child: Row(children: [
+                                          Icon(Icons.delete_outline, size: 18, color: AppColors.error),
+                                          SizedBox(width: AppSpacing.sm),
+                                          Text('Sil'),
+                                        ]),
+                                      ),
+                                    ],
+                                  ),
+                                  const Icon(Icons.expand_more, color: AppColors.textSecondary),
+                                ],
+                              ),
                               title: Text(parentCat.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                               subtitle: Padding(
                                 padding: const EdgeInsets.only(top: 4.0),
@@ -376,26 +413,7 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                                   color: AppColors.background,
                                   child: Column(
                                     children: [
-                                      Padding(
-                                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                                        child: Row(
-                                          mainAxisAlignment: MainAxisAlignment.end,
-                                          children: [
-                                            TextButton.icon(
-                                              onPressed: () => _showAddEditDialog(parentCat),
-                                              icon: const Icon(Icons.edit, size: 16, color: AppColors.primary),
-                                              label: const Text('Düzenle', style: TextStyle(color: AppColors.primary)),
-                                            ),
-                                            const SizedBox(width: 8),
-                                            TextButton.icon(
-                                              onPressed: () => _deleteCategory(parentCat),
-                                              icon: const Icon(Icons.delete, size: 16, color: AppColors.error),
-                                              label: const Text('Sil', style: TextStyle(color: AppColors.error)),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      const Divider(height: 1, color: AppColors.border),
+
                                       if (children.isNotEmpty)
                                         ...children.map((child) => Container(
                                               decoration: const BoxDecoration(
@@ -411,16 +429,34 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
                                                 ),
                                                 minLeadingWidth: 16,
                                                 title: Text(child.name, style: const TextStyle(fontWeight: FontWeight.w600, color: AppColors.textPrimary, fontSize: 14)),
-                                                trailing: Row(
-                                                  mainAxisSize: MainAxisSize.min,
-                                                  children: [
-                                                    IconButton(
-                                                      icon: const Icon(Icons.edit_outlined, color: AppColors.primary, size: 20),
-                                                      onPressed: () => _showAddEditDialog(child),
+                                                trailing: PopupMenuButton<String>(
+                                                  icon: const Icon(Icons.more_vert, color: AppColors.textSecondary, size: 20),
+                                                  onSelected: (value) {
+                                                    switch (value) {
+                                                      case 'edit':
+                                                        _showAddEditDialog(child);
+                                                        break;
+                                                      case 'delete':
+                                                        _deleteCategory(child);
+                                                        break;
+                                                    }
+                                                  },
+                                                  itemBuilder: (context) => [
+                                                    const PopupMenuItem(
+                                                      value: 'edit',
+                                                      child: Row(children: [
+                                                        Icon(Icons.edit_outlined, size: 18, color: Colors.amber),
+                                                        SizedBox(width: AppSpacing.sm),
+                                                        Text('Düzenle', style: TextStyle(color: Colors.amber)),
+                                                      ]),
                                                     ),
-                                                    IconButton(
-                                                      icon: const Icon(Icons.delete_outline, color: AppColors.error, size: 20),
-                                                      onPressed: () => _deleteCategory(child),
+                                                    const PopupMenuItem(
+                                                      value: 'delete',
+                                                      child: Row(children: [
+                                                        Icon(Icons.delete_outline, size: 18, color: AppColors.error),
+                                                        SizedBox(width: AppSpacing.sm),
+                                                        Text('Sil'),
+                                                      ]),
                                                     ),
                                                   ],
                                                 ),

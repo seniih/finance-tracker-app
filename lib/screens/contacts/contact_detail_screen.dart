@@ -16,6 +16,7 @@ import '../../widgets/custom_app_bar.dart';
 import '../transactions/forms/transaction_form.dart';
 import '../transactions/forms/investment_in_form.dart';
 import '../transactions/forms/investment_out_form.dart';
+import '../transactions/forms/purchase_form.dart';
 
 /// Bir carinin detay sayfası: iletişim bilgileri, cariyi düzenle/sil ve o
 /// cariye bağlı tüm işlemlerin listesi (her satırda düzenle/sil).
@@ -57,13 +58,15 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
     setState(() => _isLoading = true);
     try {
       final data = await _db.getTransactions(contactId: _contact.id);
+      // Arsa satışlarından bu cariye (yatırımcı olarak) doğan borç
+      final saleDebts = await _db.getInvestorSaleDebts();
       if (!mounted) return;
       setState(() {
         _transactions = data;
         _balances = ContactBalanceCalculator.calculate(
           data,
-          openingBalance: _contact.openingBalance,
-          openingBalanceCurrency: _contact.openingBalanceCurrency,
+          openingBalances: _contact.openingBalances,
+          saleDebtTry: saleDebts[_contact.id] ?? 0,
         );
         _isLoading = false;
         _isFirstLoad = false;
@@ -97,6 +100,8 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
       TransactionType.transfer => AppColors.info,
       TransactionType.investmentIn => AppColors.investmentIn,
       TransactionType.investmentOut => AppColors.investmentOut,
+      TransactionType.purchase => AppColors.error,
+      TransactionType.sale => AppColors.success,
     };
   }
 
@@ -106,6 +111,8 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
       TransactionType.transfer => Icons.swap_horiz,
       TransactionType.investmentIn => Icons.download,
       TransactionType.investmentOut => Icons.upload,
+      TransactionType.purchase => Icons.shopping_cart_outlined,
+      TransactionType.sale => Icons.sell_outlined,
     };
   }
 
@@ -116,6 +123,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
 
   bool _isPositive(TransactionModel tr) {
     if (tr.transactionType == TransactionType.investmentIn) return true;
+    if (tr.transactionType == TransactionType.sale) return true; // satış geliri
     if (tr.transactionType == TransactionType.standard) return tr.category?.type == CategoryType.income;
     return false;
   }
@@ -137,9 +145,12 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
       form = InvestmentInForm(existingTransaction: tr, existingLedgers: ledgers);
     } else if (tr.transactionType == TransactionType.investmentOut) {
       form = InvestmentOutForm(existingTransaction: tr, existingLedgers: ledgers);
+    } else if (tr.transactionType == TransactionType.purchase) {
+      form = PurchaseForm(existingTransaction: tr, existingLedgers: ledgers);
     }
     // Not: Transfer işlemlerinde contact_id hiç set edilmediğinden bu listede
-    // transfer görünmez, bu yüzden transfer için bir dal gerekmiyor.
+    // transfer görünmez. Satış işlemi land_sales kaydına bağlı olduğundan
+    // buradan düzenlenmez (arsa detayından satışı silip yeniden kaydedin).
     if (form == null) return;
 
     final changed = await Navigator.push(context, MaterialPageRoute(builder: (_) => form!));
@@ -193,10 +204,21 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
     String iban = _contact.iban ?? '';
     String address = _contact.address ?? '';
     String description = _contact.description ?? '';
-    String openingBalanceStr = _contact.openingBalance == 0 ? '' : formatNumberForInput(_contact.openingBalance.abs());
-    String openingCurrency = _contact.openingBalanceCurrency;
-    bool isDebtor = _contact.openingBalance >= 0; // true: cari bana borçlu
     String? errorText;
+
+    // Çoklu açılış bakiyesi satırları
+    final balanceRows = <_OpeningBalanceRow>[];
+    for (final entry in _contact.openingBalances.entries) {
+      balanceRows.add(_OpeningBalanceRow(
+        amountStr: formatNumberForInput(entry.value.abs()),
+        currency: entry.key,
+        isDebtor: entry.value >= 0,
+      ));
+    }
+
+    if (balanceRows.isEmpty) {
+      balanceRows.add(_OpeningBalanceRow(amountStr: '', currency: 'TRY', isDebtor: true));
+    }
 
     showDialog(
       context: context,
@@ -273,71 +295,100 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextFormField(
-                            initialValue: openingBalanceStr,
-                            decoration: buildInputDecoration('Tutar'),
-                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                            inputFormatters: [ThousandSeparatorInputFormatter()],
-                            onChanged: (val) => openingBalanceStr = val,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: DropdownButtonFormField<String>(
-                            decoration: buildInputDecoration('Para Birimi'),
-                            initialValue: openingCurrency,
-                            items: appCurrencies.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                            onChanged: (val) => setDialogState(() => openingCurrency = val ?? openingCurrency),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: InkWell(
-                            onTap: () => setDialogState(() => isDebtor = true),
-                            borderRadius: BorderRadius.circular(10),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              decoration: BoxDecoration(
-                                color: isDebtor ? AppColors.success.withValues(alpha: 0.1) : AppColors.background,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: isDebtor ? AppColors.success : AppColors.border),
-                              ),
-                              child: Text(
-                                'Cari Bana Borçlu',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: isDebtor ? AppColors.success : AppColors.textSecondary),
-                              ),
+                    ...balanceRows.asMap().entries.map((mapEntry) {
+                      final i = mapEntry.key;
+                      final row = mapEntry.value;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    key: ValueKey('bal_amount_${i}_${row.currency}'),
+                                    initialValue: row.amountStr,
+                                    decoration: buildInputDecoration('Tutar'),
+                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                    inputFormatters: [ThousandSeparatorInputFormatter()],
+                                    onChanged: (val) => row.amountStr = val,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    key: ValueKey('bal_currency_${i}_${row.currency}'),
+                                    decoration: buildInputDecoration('Birim'),
+                                    initialValue: row.currency,
+                                    items: appCurrencies.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                                    onChanged: (val) => setDialogState(() => row.currency = val ?? row.currency),
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.close, size: 20, color: AppColors.error),
+                                  onPressed: () => setDialogState(() => balanceRows.removeAt(i)),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                ),
+                              ],
                             ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: InkWell(
-                            onTap: () => setDialogState(() => isDebtor = false),
-                            borderRadius: BorderRadius.circular(10),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(vertical: 10),
-                              decoration: BoxDecoration(
-                                color: !isDebtor ? AppColors.warning.withValues(alpha: 0.1) : AppColors.background,
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: !isDebtor ? AppColors.warning : AppColors.border),
-                              ),
-                              child: Text(
-                                'Ben Cariye Borçluyum',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: !isDebtor ? AppColors.warning : AppColors.textSecondary),
-                              ),
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: InkWell(
+                                    onTap: () => setDialogState(() => row.isDebtor = true),
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                      decoration: BoxDecoration(
+                                        color: row.isDebtor ? AppColors.success.withValues(alpha: 0.1) : AppColors.background,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(color: row.isDebtor ? AppColors.success : AppColors.border),
+                                      ),
+                                      child: Text(
+                                        'Cari Bana Borçlu',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: row.isDebtor ? AppColors.success : AppColors.textSecondary),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: InkWell(
+                                    onTap: () => setDialogState(() => row.isDebtor = false),
+                                    borderRadius: BorderRadius.circular(10),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                      decoration: BoxDecoration(
+                                        color: !row.isDebtor ? AppColors.warning.withValues(alpha: 0.1) : AppColors.background,
+                                        borderRadius: BorderRadius.circular(10),
+                                        border: Border.all(color: !row.isDebtor ? AppColors.warning : AppColors.border),
+                                      ),
+                                      child: Text(
+                                        'Ben Cariye Borçluyum',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: !row.isDebtor ? AppColors.warning : AppColors.textSecondary),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ),
+                            if (i < balanceRows.length - 1)
+                              const Divider(color: AppColors.border, height: 16),
+                          ],
                         ),
-                      ],
+                      );
+                    }),
+                    TextButton.icon(
+                      onPressed: () => setDialogState(() {
+                        balanceRows.add(_OpeningBalanceRow(amountStr: '', currency: 'TRY', isDebtor: true));
+                      }),
+                      icon: const Icon(Icons.add, size: 18),
+                      label: const Text('Başka Para Birimi Ekle'),
+                      style: TextButton.styleFrom(foregroundColor: AppColors.primary),
                     ),
                     if (errorText != null) ...[
                       const SizedBox(height: 12),
@@ -355,7 +406,17 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
                       return;
                     }
                     Navigator.pop(dialogCtx);
-                    final openingAmount = parseFormattedNumber(openingBalanceStr)?.abs() ?? 0.0;
+                    // Çoklu açılış bakiyesini Map'e çevir
+                    final openingBalances = <String, double>{};
+                    for (final row in balanceRows) {
+                      final amount = parseFormattedNumber(row.amountStr)?.abs() ?? 0.0;
+                      if (amount > 0) {
+                        final signed = row.isDebtor ? amount : -amount;
+                        openingBalances[row.currency] = (openingBalances[row.currency] ?? 0) + signed;
+                      }
+                    }
+                    // Sıfıra yuvarlanmış olanları temizle
+                    openingBalances.removeWhere((_, v) => v.abs() < 0.005);
                     final updated = Contact(
                       id: _contact.id,
                       userId: _contact.userId,
@@ -367,20 +428,14 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
                       iban: iban.trim().isEmpty ? null : iban.trim(),
                       address: address.trim().isEmpty ? null : address.trim(),
                       description: description.trim().isEmpty ? null : description.trim(),
-                      openingBalance: isDebtor ? openingAmount : -openingAmount,
-                      openingBalanceCurrency: openingCurrency,
+                      openingBalances: openingBalances,
                     );
                     try {
                       await _db.updateContact(updated);
                       if (!mounted) return;
-                      setState(() {
-                        _contact = updated;
-                        _balances = ContactBalanceCalculator.calculate(
-                          _transactions,
-                          openingBalance: _contact.openingBalance,
-                          openingBalanceCurrency: _contact.openingBalanceCurrency,
-                        );
-                      });
+                      setState(() => _contact = updated);
+                      // Bakiye satış borçlarıyla birlikte yeniden hesaplansın
+                      _loadData();
                       _notifyChanged();
                     } catch (e) {
                       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Hata: $e')));
@@ -545,6 +600,16 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
                   ],
                 ),
               ),
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, color: Colors.amber),
+                onPressed: _showEditContactDialog,
+                tooltip: 'Düzenle',
+              ),
+              IconButton(
+                icon: const Icon(Icons.delete_outline, color: AppColors.error),
+                onPressed: _confirmDeleteContact,
+                tooltip: 'Sil',
+              ),
             ],
           ),
           const SizedBox(height: AppSpacing.lg),
@@ -558,38 +623,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
           if (_contact.iban != null) _detailRow(Icons.account_balance_outlined, 'IBAN', _contact.iban!),
           if (_contact.address != null) _detailRow(Icons.location_on_outlined, 'Adres', _contact.address!),
           if (_contact.description != null) _detailRow(Icons.notes_outlined, 'Açıklama', _contact.description!),
-          const SizedBox(height: AppSpacing.sm),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _showEditContactDialog,
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  label: const Text('Düzenle'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.primary,
-                    side: const BorderSide(color: AppColors.primary),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-              const SizedBox(width: AppSpacing.md),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: _confirmDeleteContact,
-                  icon: const Icon(Icons.delete_outline, size: 18),
-                  label: const Text('Sil'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.error,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-            ],
-          ),
+
         ],
       ),
     );
@@ -734,4 +768,18 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
             ),
     );
   }
+}
+
+/// Dialog içinde çoklu açılış bakiyesi satırlarını yönetmek için
+/// mutable yardımcı sınıf.
+class _OpeningBalanceRow {
+  String amountStr;
+  String currency;
+  bool isDebtor;
+
+  _OpeningBalanceRow({
+    required this.amountStr,
+    required this.currency,
+    required this.isDebtor,
+  });
 }

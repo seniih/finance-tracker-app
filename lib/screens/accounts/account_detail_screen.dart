@@ -14,6 +14,7 @@ import '../transactions/forms/transaction_form.dart';
 import '../transactions/forms/transfer_form.dart';
 import '../transactions/forms/investment_in_form.dart';
 import '../transactions/forms/investment_out_form.dart';
+import '../transactions/forms/purchase_form.dart';
 
 /// Bir kasa/hesabın detay sayfası: güncel bakiye, hesabı düzenle/sil ve o
 /// hesabı etkileyen tüm işlemlerin ekstresi (her satırda düzenle/sil).
@@ -87,6 +88,8 @@ class _AccountDetailScreenState extends State<AccountDetailScreen> {
       TransactionType.transfer => AppColors.info,
       TransactionType.investmentIn => AppColors.investmentIn,
       TransactionType.investmentOut => AppColors.investmentOut,
+      TransactionType.purchase => AppColors.error,
+      TransactionType.sale => AppColors.success,
     };
   }
 
@@ -98,6 +101,8 @@ class _AccountDetailScreenState extends State<AccountDetailScreen> {
       TransactionType.transfer => le.entryType == 'debit' ? Icons.call_received : Icons.call_made,
       TransactionType.investmentIn => Icons.download,
       TransactionType.investmentOut => Icons.upload,
+      TransactionType.purchase => Icons.shopping_cart_outlined,
+      TransactionType.sale => Icons.sell_outlined,
     };
   }
 
@@ -109,6 +114,8 @@ class _AccountDetailScreenState extends State<AccountDetailScreen> {
       TransactionType.transfer => le.entryType == 'debit' ? 'Gelen Transfer' : 'Giden Transfer',
       TransactionType.investmentIn => 'Yatırım Girişi',
       TransactionType.investmentOut => 'Yatırım Çıkışı',
+      TransactionType.purchase => 'Alış',
+      TransactionType.sale => 'Satış',
     };
   }
 
@@ -126,11 +133,23 @@ class _AccountDetailScreenState extends State<AccountDetailScreen> {
     }
     if (!mounted) return;
 
+    // Satış işlemi land_sales kaydına bağlıdır; buradan düzenlenirse satış
+    // kaydıyla tutarsızlaşır (arsa detayından satışı silip yeniden kaydedin).
+    if (tr.transactionType == TransactionType.sale) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Satış işlemi buradan düzenlenemez. Arsa detayından satışı silip yeniden kaydedin.')));
+      return;
+    }
+
     final form = switch (tr.transactionType) {
       TransactionType.standard => TransactionForm(existingTransaction: tr, existingLedgers: ledgers),
       TransactionType.transfer => TransferForm(existingTransaction: tr, existingLedgers: ledgers),
       TransactionType.investmentIn => InvestmentInForm(existingTransaction: tr, existingLedgers: ledgers),
       TransactionType.investmentOut => InvestmentOutForm(existingTransaction: tr, existingLedgers: ledgers),
+      TransactionType.purchase => PurchaseForm(existingTransaction: tr, existingLedgers: ledgers),
+      // Yukarıda engellendi; switch'in eksiksiz olması için:
+      TransactionType.sale => TransactionForm(existingTransaction: tr, existingLedgers: ledgers),
     };
 
     final changed = await Navigator.push(context, MaterialPageRoute(builder: (_) => form));

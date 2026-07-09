@@ -3,12 +3,12 @@ import '../models/profile.dart';
 import '../models/contact.dart';
 import '../models/contact_type.dart';
 import '../models/account.dart';
+import '../models/profit_center.dart';
 import '../models/project.dart';
 import '../models/land.dart';
-import '../models/land_contact.dart';
-import '../models/land_investment.dart';
+import '../models/project_investor.dart';
+import '../models/project_investment.dart';
 import '../models/land_sale.dart';
-import '../models/land_sale_distribution.dart';
 import '../models/category.dart';
 import '../models/transaction.dart';
 import '../models/ledger_entry.dart';
@@ -90,11 +90,11 @@ class SupabaseDatabaseService implements DatabaseService {
         'Bu cariye bağlı ${trxCount.count} işlem kaydı var. Önce bu işlemleri silin veya başka bir cariye aktarın.',
       );
     }
-    // Arsa yatırımcısı olarak eklenmiş mi?
-    final lcCount = await _client.from('land_contacts').select('id').eq('contact_id', id).count(CountOption.exact);
-    if (lcCount.count > 0) {
+    // Proje yatırımcısı olarak eklenmiş mi?
+    final piCount = await _client.from('project_investors').select('id').eq('contact_id', id).count(CountOption.exact);
+    if (piCount.count > 0) {
       throw DependencyException(
-        'Bu cari ${lcCount.count} arsada yatırımcı/ortak olarak kayıtlı. Önce arsa yatırımcı kayıtlarını kaldırın.',
+        'Bu cari ${piCount.count} projede yatırımcı olarak kayıtlı. Önce proje yatırımcı kayıtlarını kaldırın.',
       );
     }
     await _client.from('contacts').delete().eq('id', id);
@@ -167,10 +167,47 @@ class SupabaseDatabaseService implements DatabaseService {
     await _client.from('accounts').delete().eq('id', id);
   }
 
+  // ── Profit Centers ─────────────────────────────────────────────────────────
+  @override
+  Future<List<ProfitCenter>> getProfitCenters() async {
+    final data = await _client.from('profit_centers').select().order('name');
+    return (data as List).map((json) => ProfitCenter.fromJson(json)).toList();
+  }
+
+  @override
+  Future<void> addProfitCenter(ProfitCenter profitCenter) async {
+    await _client.from('profit_centers').insert({
+      ...profitCenter.toJson(),
+      'user_id': _uid,
+    });
+  }
+
+  @override
+  Future<void> updateProfitCenter(ProfitCenter profitCenter) async {
+    await _client.from('profit_centers').update(profitCenter.toJson()).eq('id', profitCenter.id);
+  }
+
+  @override
+  Future<void> deleteProfitCenter(String id) async {
+    // Kar merkezine bağlı proje var mı?
+    final projectCount =
+        await _client.from('projects').select('id').eq('profit_center_id', id).count(CountOption.exact);
+    if (projectCount.count > 0) {
+      throw DependencyException(
+        'Bu kar merkezine bağlı ${projectCount.count} proje var. Önce projeleri silin veya başka bir kar merkezine taşıyın.',
+      );
+    }
+    await _client.from('profit_centers').delete().eq('id', id);
+  }
+
   // ── Projects ───────────────────────────────────────────────────────────────
   @override
-  Future<List<Project>> getProjects() async {
-    final data = await _client.from('projects').select().order('name');
+  Future<List<Project>> getProjects({String? profitCenterId}) async {
+    var query = _client.from('projects').select('*, profit_centers(*)');
+    if (profitCenterId != null) {
+      query = query.eq('profit_center_id', profitCenterId);
+    }
+    final data = await query.order('name');
     return (data as List).map((json) => Project.fromJson(json)).toList();
   }
 
@@ -194,6 +231,13 @@ class SupabaseDatabaseService implements DatabaseService {
     if (landCount.count > 0) {
       throw DependencyException(
         'Bu projeye bağlı ${landCount.count} arsa var. Önce arsaları silin veya başka bir projeye taşıyın.',
+      );
+    }
+    // Projeye kayıtlı yatırımcı var mı?
+    final invCount = await _client.from('project_investors').select('id').eq('project_id', id).count(CountOption.exact);
+    if (invCount.count > 0) {
+      throw DependencyException(
+        'Bu projede ${invCount.count} yatırımcı kayıtlı. Önce yatırımcıları çıkarın.',
       );
     }
     // Projeye bağlı işlem var mı?
@@ -232,11 +276,11 @@ class SupabaseDatabaseService implements DatabaseService {
 
   @override
   Future<void> deleteLand(String id) async {
-    // Arsaya bağlı yatırımcı var mı?
-    final lcCount = await _client.from('land_contacts').select('id').eq('land_id', id).count(CountOption.exact);
-    if (lcCount.count > 0) {
+    // Satış kaydı var mı? (CASCADE ile sessizce silinmesin -- bilinçli karar olsun)
+    final saleCount = await _client.from('land_sales').select('id').eq('land_id', id).count(CountOption.exact);
+    if (saleCount.count > 0) {
       throw DependencyException(
-        'Bu arsada ${lcCount.count} yatırımcı/ortak kayıtlı. Önce yatırımcıları çıkarın.',
+        'Bu arsanın satış kaydı var. Önce satış kaydını silin.',
       );
     }
     // Arsaya bağlı işlem var mı?
@@ -249,62 +293,69 @@ class SupabaseDatabaseService implements DatabaseService {
     await _client.from('lands').delete().eq('id', id);
   }
 
-  // ── Land Contacts ──────────────────────────────────────────────────────────
+  // ── Project Investors ──────────────────────────────────────────────────────
   @override
-  Future<List<LandContact>> getLandContacts(String landId) async {
-    // Yatırımcı + tüm ödemeleri tek sorguda: toplam TL/USD, model
-    // getter'larından (totalPaidTry/totalPaidUsd) hesaplanır.
+  Future<List<ProjectInvestor>> getProjectInvestors(String projectId) async {
+    // Yatırımcı + tüm sermaye ödemeleri tek sorguda: toplam TL/USD, model
+    // getter'larından (totalCapitalTry/totalCapitalUsd) hesaplanır.
     final data = await _client
-        .from('land_contacts')
-        .select('*, contacts(*), land_investments(*)')
-        .eq('land_id', landId);
-    return (data as List).map((json) => LandContact.fromJson(json)).toList();
+        .from('project_investors')
+        .select('*, contacts(*), project_investments(*)')
+        .eq('project_id', projectId);
+    return (data as List).map((json) => ProjectInvestor.fromJson(json)).toList();
   }
 
   @override
-  Future<void> addLandContact(LandContact landContact) async {
-    await _client.from('land_contacts').insert(landContact.toJson());
+  Future<void> addProjectInvestor(ProjectInvestor investor) async {
+    await _client.from('project_investors').insert(investor.toJson());
   }
 
   @override
-  Future<void> updateLandContact(LandContact landContact) async {
-    await _client.from('land_contacts').update(landContact.toJson()).eq('id', landContact.id);
+  Future<void> updateProjectInvestor(ProjectInvestor investor) async {
+    await _client.from('project_investors').update(investor.toJson()).eq('id', investor.id);
   }
 
   @override
-  Future<void> deleteLandContact(String id) async {
-    // Bu yatırımcıya satış dağıtımı yapılmış mı?
-    final distCount = await _client.from('land_sale_distributions').select('id').eq('land_contact_id', id).count(CountOption.exact);
+  Future<void> deleteProjectInvestor(String id) async {
+    // Bu yatırımcıya satış dağıtımı yapılmış mı? (DB'de FK RESTRICT de var;
+    // burada kullanıcıya anlaşılır mesaj vermek için önden kontrol ediyoruz.)
+    final distCount = await _client
+        .from('land_sale_distributions')
+        .select('id')
+        .eq('project_investor_id', id)
+        .count(CountOption.exact);
     if (distCount.count > 0) {
       throw DependencyException(
-        'Bu yatırımcıya satış dağıtımı yapılmış. Önce satış kaydını silin.',
+        'Bu yatırımcıya satış dağıtımı yapılmış. Önce ilgili satış kayıtlarını silin.',
       );
     }
-    await _client.from('land_contacts').delete().eq('id', id);
+    await _client.from('project_investors').delete().eq('id', id);
   }
 
-  // ── Land Investments (Yatırımcı Ödemeleri) ─────────────────────────────────
+  // ── Project Investments (Sermaye Ödemeleri) ────────────────────────────────
+  // Ödeme değişince projenin satış dağıtımlarını DB trigger'ı otomatik
+  // yeniden hesaplar -- burada ek bir şey yapılmaz.
   @override
-  Future<void> addLandInvestment(LandInvestment investment) async {
-    await _client.from('land_investments').insert(investment.toJson());
-  }
-
-  @override
-  Future<void> updateLandInvestment(LandInvestment investment) async {
-    await _client.from('land_investments').update(investment.toJson()).eq('id', investment.id);
+  Future<void> addProjectInvestment(ProjectInvestment investment) async {
+    await _client.from('project_investments').insert(investment.toJson());
   }
 
   @override
-  Future<void> deleteLandInvestment(String id) async {
-    await _client.from('land_investments').delete().eq('id', id);
+  Future<void> updateProjectInvestment(ProjectInvestment investment) async {
+    await _client.from('project_investments').update(investment.toJson()).eq('id', investment.id);
   }
 
-  // ── Land Sales (Arsa Satışı + Dağıtım) ─────────────────────────────────────
+  @override
+  Future<void> deleteProjectInvestment(String id) async {
+    await _client.from('project_investments').delete().eq('id', id);
+  }
+
+  // ── Land Sales (Arsa Satışı) ───────────────────────────────────────────────
   @override
   Future<LandSale?> getLandSale(String landId) async {
     final data = await _client
         .from('land_sales')
-        .select('*, contacts(*), land_sale_distributions(*, land_contacts(*, contacts(*)))')
+        .select('*, contacts(*), land_sale_distributions(*, project_investors(*, contacts(*)))')
         .eq('land_id', landId)
         .maybeSingle();
     if (data == null) return null;
@@ -312,37 +363,36 @@ class SupabaseDatabaseService implements DatabaseService {
   }
 
   @override
-  Future<void> createLandSale(LandSale sale, List<LandSaleDistribution> distributions) async {
-    // Önce satış kaydı, sonra dağıtım satırları. Dağıtım tutarlarını
-    // (amount_try) DB trigger'ı hesaplar; arsa durumu da trigger ile
-    // otomatik 'sold' olur. Dağıtım insert'i başarısız olursa satışı geri
-    // alarak yarım kayıt bırakmıyoruz (client tarafında telafi -- Supabase
-    // JS/Dart SDK'sında çok tablolu atomik transaction yok).
-    final saleData = sale.toJson()..remove('id');
-    final inserted = await _client.from('land_sales').insert(saleData).select('id').single();
-    final String saleId = inserted['id'];
-
-    if (distributions.isNotEmpty) {
-      try {
-        final rows = distributions.map((d) {
-          final map = d.toJson();
-          map['land_sale_id'] = saleId;
-          map.remove('id');
-          return map;
-        }).toList();
-        await _client.from('land_sale_distributions').insert(rows);
-      } catch (e) {
-        await _client.from('land_sales').delete().eq('id', saleId);
-        rethrow;
-      }
-    }
+  Future<void> createLandSale(LandSale sale, {required String accountId}) async {
+    // Satış + kasa girişi TEK Postgres transaction'ında (RPC). Dağıtım
+    // satırlarını ve arsa durumunu DB trigger'ları halleder.
+    // Bkz. supabase/migrations/20260709140000_purchase_sale_cash.sql
+    await _client.rpc('create_land_sale_with_cash', params: {
+      'p_land_id': sale.landId,
+      'p_sale_price_try': sale.salePriceTry,
+      'p_usd_rate': sale.usdRate,
+      'p_owner_profit_pct': sale.ownerProfitPct,
+      'p_sale_date': sale.saleDate.toIso8601String().split('T').first,
+      'p_buyer_contact_id': sale.buyerContactId,
+      'p_account_id': accountId,
+      'p_description': sale.description,
+    });
   }
 
   @override
   Future<void> deleteLandSale(String id) async {
-    // ON DELETE CASCADE ile dağıtım satırları da silinir;
-    // trigger arsa durumunu 'purchased'a döndürür.
+    // ON DELETE CASCADE ile dağıtım satırları, trigger'larla bağlı kasa
+    // işlemi silinir ve arsa durumu 'purchased'a döner.
     await _client.from('land_sales').delete().eq('id', id);
+  }
+
+  @override
+  Future<Map<String, double>> getInvestorSaleDebts() async {
+    final data = await _client.from('investor_sale_debts').select();
+    return {
+      for (final row in data as List)
+        row['contact_id'] as String: (row['total_debt_try'] as num).toDouble(),
+    };
   }
 
   // ── Categories ─────────────────────────────────────────────────────────────

@@ -10,6 +10,9 @@ import 'constants.dart';
 /// - GELİR (cariden ödeme alındı) ve YATIRIM GİRİŞİ (cariden para girişi)
 ///   → negatif katkı: cariye olan borcum artar / carinin bana olan borcu azalır.
 /// - Transfer işlemlerinde contact_id hiç set edilmediğinden hesaba katılmaz.
+/// - ALIŞ (satıcı cari) ve SATIŞ (alıcı cari) alışverişin kendisidir,
+///   borç/alacak doğurmaz → 0. (Yatırımcıya satıştan doğan borç, işlemden
+///   değil dağıtım satırlarından gelir -- [saleDebts] parametresi.)
 ///
 /// Dönen haritada: pozitif değer = "Cari bana borçlu", negatif değer = "Ben cariye borçluyum".
 abstract final class ContactBalanceCalculator {
@@ -23,22 +26,32 @@ abstract final class ContactBalanceCalculator {
       case TransactionType.investmentIn:
         return -1.0;
       case TransactionType.transfer:
+      case TransactionType.purchase:
+      case TransactionType.sale:
         return 0.0;
     }
   }
 
   /// [transactions] tek bir cariye ait olmalı (contactId filtreli liste).
-  /// [openingBalance]/[openingBalanceCurrency] o carinin devir bakiyesidir
-  /// (bkz. Contact.openingBalance) -- işlemlerden önceki başlangıç değeri
-  /// olarak hesaba katılır. Para birimine göre net bakiyeyi döner.
+  /// [openingBalances] o carinin devir bakiyeleridir (para birimi → tutar).
+  /// İşlemlerden önceki başlangıç değeri olarak hesaba katılır.
+  /// [saleDebtTry]: bu cariye arsa satışlarından doğan toplam dağıtım borcu
+  /// (TL). "Ben cariye borçluyum" yönünde (negatif) katılır; yatırımcıya
+  /// yapılan Ödeme (gider) işlemleri pozitif katkıyla bu borcu kapatır.
   static Map<String, double> calculate(
     List<TransactionModel> transactions, {
-    double openingBalance = 0,
-    String openingBalanceCurrency = 'TRY',
+    Map<String, double> openingBalances = const {},
+    double saleDebtTry = 0,
   }) {
     final balances = <String, double>{};
-    if (openingBalance != 0) {
-      balances[openingBalanceCurrency] = openingBalance;
+    // Açılış bakiyelerini ekle (birden fazla para birimi olabilir)
+    for (final entry in openingBalances.entries) {
+      if (entry.value != 0) {
+        balances[entry.key] = (balances[entry.key] ?? 0) + entry.value;
+      }
+    }
+    if (saleDebtTry != 0) {
+      balances['TRY'] = (balances['TRY'] ?? 0) - saleDebtTry;
     }
     for (final tr in transactions) {
       final delta = _sign(tr) * tr.amount;
@@ -55,10 +68,13 @@ abstract final class ContactBalanceCalculator {
   /// listesinden okunur -- işlemi hiç olmayan ama devir bakiyesi olan cariler
   /// de dahil edilsin diye gruplama değil, cari listesi baz alınıyor).
   /// Sonuç: contactId -> (para birimi -> bakiye).
+  /// [saleDebtsByContact]: contactId -> toplam satış dağıtım borcu (TL),
+  /// DatabaseService.getInvestorSaleDebts() çıktısı.
   static Map<String, Map<String, double>> calculateByContact(
     List<TransactionModel> transactions,
-    List<Contact> contacts,
-  ) {
+    List<Contact> contacts, {
+    Map<String, double> saleDebtsByContact = const {},
+  }) {
     final grouped = <String, List<TransactionModel>>{};
     for (final tr in transactions) {
       final cId = tr.contactId;
@@ -69,8 +85,8 @@ abstract final class ContactBalanceCalculator {
     for (final c in contacts) {
       result[c.id] = calculate(
         grouped[c.id] ?? const [],
-        openingBalance: c.openingBalance,
-        openingBalanceCurrency: c.openingBalanceCurrency,
+        openingBalances: c.openingBalances,
+        saleDebtTry: saleDebtsByContact[c.id] ?? 0,
       );
     }
     return result;

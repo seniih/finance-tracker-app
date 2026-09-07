@@ -13,6 +13,7 @@ import '../../utils/form_helpers.dart';
 import '../../services/database_service.dart';
 import '../../services/supabase_database_service.dart';
 import '../../widgets/custom_app_bar.dart';
+import '../../widgets/opening_balance_editor.dart';
 import '../transactions/forms/transaction_form.dart';
 import '../transactions/forms/investment_in_form.dart';
 import '../transactions/forms/investment_out_form.dart';
@@ -207,9 +208,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
     String? errorText;
 
     // Çoklu açılış bakiyesi satırları
-    final balanceRows = <_OpeningBalanceRow>[];
+    final balanceRows = <OpeningBalanceRow>[];
     for (final entry in _contact.openingBalances.entries) {
-      balanceRows.add(_OpeningBalanceRow(
+      balanceRows.add(OpeningBalanceRow(
         amountStr: formatNumberForInput(entry.value.abs()),
         currency: entry.key,
         isDebtor: entry.value >= 0,
@@ -217,7 +218,7 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
     }
 
     if (balanceRows.isEmpty) {
-      balanceRows.add(_OpeningBalanceRow(amountStr: '', currency: 'TRY', isDebtor: true));
+      balanceRows.add(OpeningBalanceRow(amountStr: '', currency: 'TRY', isDebtor: true));
     }
 
     showDialog(
@@ -287,108 +288,9 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
                     const SizedBox(height: 12),
                     const Divider(color: AppColors.border),
                     const SizedBox(height: 4),
-                    const Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Açılış Bakiyesi (Devir) -- Opsiyonel',
-                        style: TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    ...balanceRows.asMap().entries.map((mapEntry) {
-                      final i = mapEntry.key;
-                      final row = mapEntry.value;
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Column(
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: TextFormField(
-                                    key: ValueKey('bal_amount_${i}_${row.currency}'),
-                                    initialValue: row.amountStr,
-                                    decoration: buildInputDecoration('Tutar'),
-                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                    inputFormatters: [ThousandSeparatorInputFormatter()],
-                                    onChanged: (val) => row.amountStr = val,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: DropdownButtonFormField<String>(
-                                    key: ValueKey('bal_currency_${i}_${row.currency}'),
-                                    decoration: buildInputDecoration('Birim'),
-                                    initialValue: row.currency,
-                                    items: appCurrencies.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                                    onChanged: (val) => setDialogState(() => row.currency = val ?? row.currency),
-                                  ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.close, size: 20, color: AppColors.error),
-                                  onPressed: () => setDialogState(() => balanceRows.removeAt(i)),
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: InkWell(
-                                    onTap: () => setDialogState(() => row.isDebtor = true),
-                                    borderRadius: BorderRadius.circular(10),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(vertical: 10),
-                                      decoration: BoxDecoration(
-                                        color: row.isDebtor ? AppColors.success.withValues(alpha: 0.1) : AppColors.background,
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(color: row.isDebtor ? AppColors.success : AppColors.border),
-                                      ),
-                                      child: Text(
-                                        'Cari Bana Borçlu',
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: row.isDebtor ? AppColors.success : AppColors.textSecondary),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: InkWell(
-                                    onTap: () => setDialogState(() => row.isDebtor = false),
-                                    borderRadius: BorderRadius.circular(10),
-                                    child: Container(
-                                      padding: const EdgeInsets.symmetric(vertical: 10),
-                                      decoration: BoxDecoration(
-                                        color: !row.isDebtor ? AppColors.warning.withValues(alpha: 0.1) : AppColors.background,
-                                        borderRadius: BorderRadius.circular(10),
-                                        border: Border.all(color: !row.isDebtor ? AppColors.warning : AppColors.border),
-                                      ),
-                                      child: Text(
-                                        'Ben Cariye Borçluyum',
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: !row.isDebtor ? AppColors.warning : AppColors.textSecondary),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            if (i < balanceRows.length - 1)
-                              const Divider(color: AppColors.border, height: 16),
-                          ],
-                        ),
-                      );
-                    }),
-                    TextButton.icon(
-                      onPressed: () => setDialogState(() {
-                        balanceRows.add(_OpeningBalanceRow(amountStr: '', currency: 'TRY', isDebtor: true));
-                      }),
-                      icon: const Icon(Icons.add, size: 18),
-                      label: const Text('Başka Para Birimi Ekle'),
-                      style: TextButton.styleFrom(foregroundColor: AppColors.primary),
+                    OpeningBalanceEditor(
+                      rows: balanceRows,
+                      onChanged: () => setDialogState(() {}),
                     ),
                     if (errorText != null) ...[
                       const SizedBox(height: 12),
@@ -768,18 +670,4 @@ class _ContactDetailScreenState extends State<ContactDetailScreen> {
             ),
     );
   }
-}
-
-/// Dialog içinde çoklu açılış bakiyesi satırlarını yönetmek için
-/// mutable yardımcı sınıf.
-class _OpeningBalanceRow {
-  String amountStr;
-  String currency;
-  bool isDebtor;
-
-  _OpeningBalanceRow({
-    required this.amountStr,
-    required this.currency,
-    required this.isDebtor,
-  });
 }

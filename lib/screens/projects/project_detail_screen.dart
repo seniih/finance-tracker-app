@@ -14,8 +14,6 @@ import '../../models/contact.dart';
 import '../../models/transaction.dart';
 import '../../services/database_service.dart';
 import '../../services/supabase_database_service.dart';
-import '../transactions/forms/investment_in_form.dart';
-import '../transactions/forms/investment_out_form.dart';
 import '../transactions/forms/purchase_form.dart';
 import '../lands/land_detail_screen.dart';
 
@@ -565,20 +563,6 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
     }
   }
 
-  // Bir arsa için yatırım girişi/çıkışı (kasa işlemi) ekler. Proje ve arsa
-  // kilitli olarak forma geçilir -- kullanıcı yanlış proje/arsa seçemez.
-  Future<void> _addInvestmentTransaction(Land land, {required bool isIn}) async {
-    final result = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (_) => isIn
-            ? InvestmentInForm(fixedProject: widget.project, fixedLand: land)
-            : InvestmentOutForm(fixedProject: widget.project, fixedLand: land),
-      ),
-    );
-    if (result == true) _loadData();
-  }
-
   Future<void> _openLandDetail(Land land) async {
     await Navigator.push(
       context,
@@ -810,12 +794,6 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                   case 'detail':
                     _openLandDetail(land);
                     break;
-                  case 'invest_in':
-                    _addInvestmentTransaction(land, isIn: true);
-                    break;
-                  case 'invest_out':
-                    _addInvestmentTransaction(land, isIn: false);
-                    break;
                   case 'edit':
                     _showAddEditLandDialog(land);
                     break;
@@ -831,23 +809,6 @@ class _ProjectDetailScreenState extends State<ProjectDetailScreen> {
                     Icon(Icons.sell_outlined, size: 18, color: AppColors.primary),
                     SizedBox(width: AppSpacing.sm),
                     Text('Detay & Satış'),
-                  ]),
-                ),
-                const PopupMenuDivider(),
-                PopupMenuItem(
-                  value: 'invest_in',
-                  child: Row(children: [
-                    Icon(Icons.download, size: 18, color: AppColors.investmentIn),
-                    const SizedBox(width: AppSpacing.sm),
-                    const Text('Yatırım Girişi Ekle'),
-                  ]),
-                ),
-                PopupMenuItem(
-                  value: 'invest_out',
-                  child: Row(children: [
-                    Icon(Icons.upload, size: 18, color: AppColors.investmentOut),
-                    const SizedBox(width: AppSpacing.sm),
-                    const Text('Yatırım Çıkışı Ekle'),
                   ]),
                 ),
                 const PopupMenuDivider(),
